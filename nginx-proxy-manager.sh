@@ -337,7 +337,7 @@ install_dependencies() {
     return
   fi
   apt-get update
-  apt-get install -y nginx curl jq socat
+  apt-get install -y nginx curl jq socat cron
 }
 
 install_acme_sh() {
@@ -345,9 +345,14 @@ install_acme_sh() {
     return
   fi
   if [[ "$NPMGR_TEST_MODE" == "1" ]]; then
-    return
+    :
   fi
-  curl https://get.acme.sh | sh
+  local install_script
+  install_script="$(curl -fsSL https://get.acme.sh)"
+  if ! printf '%s\n' "$install_script" | sh; then
+    warn "acme.sh 默认安装失败，尝试使用 --force 跳过 crontab 检查。"
+    printf '%s\n' "$install_script" | sh -s -- --force
+  fi
 }
 
 assert_runtime_dependencies() {

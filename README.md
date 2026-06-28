@@ -10,6 +10,8 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/wzdyf1992/nginx-proxy-manager/main/nginx-proxy-manager.sh) install
 ```
 
+这个安装流程会自动补齐 `cron`，并在 `acme.sh` 因 `crontab` 检查失败时自动回退到 `--force` 安装。
+
 初始化完成后，可继续进入交互菜单：
 
 ```bash

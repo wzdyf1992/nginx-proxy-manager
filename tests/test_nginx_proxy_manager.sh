@@ -44,6 +44,7 @@ assert_symlink_target() {
 }
 
 setup_env() {
+  local with_acme="${1:-1}"
   TMP_ROOT="$(mktemp -d)"
   export NPMGR_TEST_MODE=1
   export NPMGR_BASE_DIR="$TMP_ROOT/etc/nginx-proxy-manager"
@@ -73,7 +74,43 @@ EOF
   cat >"$TMP_ROOT/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-echo "${MOCK_CURL_RESPONSE:-{\"success\":true,\"result\":[]}}"
+if [[ "$*" == *"https://get.acme.sh"* ]]; then
+  cat <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v crontab >/dev/null 2>&1 || [[ " $* " == *" --force "* ]]; then
+  mkdir -p "$NPMGR_ACME_HOME"
+  cat >"$NPMGR_ACME_HOME/acme.sh" <<'EOA'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >>"${NPMGR_BASE_DIR}/runtime/acme.log"
+if [[ "$*" == *"--install-cert"* ]]; then
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --fullchain-file)
+        shift
+        mkdir -p "$(dirname "$1")"
+        printf 'fullchain' >"$1"
+        ;;
+      --key-file)
+        shift
+        mkdir -p "$(dirname "$1")"
+        printf 'privkey' >"$1"
+        ;;
+    esac
+    shift || true
+  done
+fi
+EOA
+  chmod +x "$NPMGR_ACME_HOME/acme.sh"
+  exit 0
+fi
+echo "Pre-check failed, cannot install." >&2
+exit 1
+EOS
+else
+  echo "${MOCK_CURL_RESPONSE:-{\"success\":true,\"result\":[]}}"
+fi
 EOF
   cat >"$TMP_ROOT/bin/jq" <<'EOF'
 #!/usr/bin/env python3
@@ -91,7 +128,8 @@ elif expr == '.result[0].content // empty':
 else:
     raise SystemExit(1)
 EOF
-  cat >"$TMP_ROOT/bin/acme.sh" <<'EOF'
+  if [[ "$with_acme" == "1" ]]; then
+    cat >"$TMP_ROOT/bin/acme.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >>"${NPMGR_BASE_DIR}/runtime/acme.log"
@@ -113,7 +151,11 @@ if [[ "$*" == *"--install-cert"* ]]; then
   done
 fi
 EOF
-  chmod +x "$TMP_ROOT/bin/nginx" "$TMP_ROOT/bin/systemctl" "$TMP_ROOT/bin/curl" "$TMP_ROOT/bin/jq" "$TMP_ROOT/bin/acme.sh"
+  fi
+  chmod +x "$TMP_ROOT/bin/nginx" "$TMP_ROOT/bin/systemctl" "$TMP_ROOT/bin/curl" "$TMP_ROOT/bin/jq"
+  if [[ "$with_acme" == "1" ]]; then
+    chmod +x "$TMP_ROOT/bin/acme.sh"
+  fi
   export PATH="$TMP_ROOT/bin:$PATH"
 }
 
@@ -135,6 +177,13 @@ test_install_creates_layout() {
   assert_exists "$NPMGR_NGINX_ETC/streams-enabled"
   assert_file_contains "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "sites-enabled/*.conf"
   assert_file_contains "$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf" "stream"
+  teardown_env
+}
+
+test_install_bootstraps_acme_without_crontab() {
+  setup_env 0
+  run_cmd install >/tmp/npmgr-install-acme.out
+  assert_exists "$NPMGR_ACME_HOME/acme.sh"
   teardown_env
 }
 
@@ -227,6 +276,7 @@ test_list_and_show_display_rule_details() {
 main() {
   [[ -x "$SCRIPT_PATH" ]] || fail "script not found: $SCRIPT_PATH"
   test_install_creates_layout
+  test_install_bootstraps_acme_without_crontab
   test_add_http_generates_rule_and_nginx_config
   test_add_tcp_tls_generates_stream_config_and_cert_files
   test_invalid_port_is_rejected
