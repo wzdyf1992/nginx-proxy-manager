@@ -42,10 +42,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wzdyf1992/nginx-proxy-manage
 - `nginx`
 - `curl`
 - `jq`
-- `acme.sh`
+- `cron`
 - `Debian 13`
 
-脚本的 `install` 命令会自动检查并安装必要依赖。
+脚本的 `install` 命令会自动安装必要依赖，并自动安装 `acme.sh`，所以第一次使用不需要你手动先装 `acme.sh`。
 
 ## 快速开始
 
@@ -93,6 +93,8 @@ sudo ./nginx-proxy-manager.sh cf-dns-check
 ```bash
 sudo ./nginx-proxy-manager.sh
 ```
+
+菜单界面和提示信息现在默认全部为中文。
 
 ### 1）添加 HTTP/HTTPS 反代
 

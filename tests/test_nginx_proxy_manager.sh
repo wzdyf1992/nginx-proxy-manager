@@ -17,6 +17,12 @@ assert_contains() {
   [[ "$haystack" == *"$needle"* ]] || fail "expected output to contain: $needle"
 }
 
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  [[ "$haystack" != *"$needle"* ]] || fail "expected output to not contain: $needle"
+}
+
 assert_file_contains() {
   local path="$1"
   local needle="$2"
@@ -51,6 +57,7 @@ setup_env() {
   export NPMGR_NGINX_ETC="$TMP_ROOT/etc/nginx"
   export NPMGR_ACME_HOME="$TMP_ROOT/acme"
   export NPMGR_SYSTEMCTL_BIN="$TMP_ROOT/bin/systemctl"
+  export NPMGR_APT_GET_BIN="$TMP_ROOT/bin/apt-get"
   export CF_Token="test-token"
   mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/etc/nginx/modules-enabled" "$TMP_ROOT/etc/nginx/conf.d"
   cat >"$TMP_ROOT/bin/nginx" <<'EOF'
@@ -70,6 +77,12 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >>"${NPMGR_BASE_DIR}/runtime/systemctl.log"
+EOF
+  cat >"$TMP_ROOT/bin/apt-get" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "${NPMGR_BASE_DIR}/runtime"
+echo "$*" >>"${NPMGR_BASE_DIR}/runtime/apt-get.log"
 EOF
   cat >"$TMP_ROOT/bin/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -152,7 +165,7 @@ if [[ "$*" == *"--install-cert"* ]]; then
 fi
 EOF
   fi
-  chmod +x "$TMP_ROOT/bin/nginx" "$TMP_ROOT/bin/systemctl" "$TMP_ROOT/bin/curl" "$TMP_ROOT/bin/jq"
+  chmod +x "$TMP_ROOT/bin/nginx" "$TMP_ROOT/bin/systemctl" "$TMP_ROOT/bin/apt-get" "$TMP_ROOT/bin/curl" "$TMP_ROOT/bin/jq"
   if [[ "$with_acme" == "1" ]]; then
     chmod +x "$TMP_ROOT/bin/acme.sh"
   fi
@@ -184,6 +197,16 @@ test_install_bootstraps_acme_without_crontab() {
   setup_env 0
   run_cmd install >/tmp/npmgr-install-acme.out
   assert_exists "$NPMGR_ACME_HOME/acme.sh"
+  teardown_env
+}
+
+test_install_skips_unused_packages() {
+  setup_env
+  run_cmd install >/tmp/npmgr-install-deps.out
+  local apt_log
+  apt_log="$(cat "$NPMGR_BASE_DIR/runtime/apt-get.log")"
+  assert_contains "$apt_log" "install -y nginx curl jq cron"
+  assert_not_contains "$apt_log" "socat"
   teardown_env
 }
 
@@ -273,15 +296,29 @@ test_list_and_show_display_rule_details() {
   teardown_env
 }
 
+test_interactive_menu_is_chinese() {
+  setup_env
+  local menu_output
+  menu_output="$(printf '0\n' | bash "$SCRIPT_PATH" 2>&1)"
+  assert_contains "$menu_output" "Nginx 代理管理"
+  assert_contains "$menu_output" "安装依赖并初始化环境"
+  assert_contains "$menu_output" "添加 HTTP/HTTPS 反向代理"
+  assert_contains "$menu_output" "退出"
+  assert_not_contains "$menu_output" "add-http"
+  teardown_env
+}
+
 main() {
   [[ -x "$SCRIPT_PATH" ]] || fail "script not found: $SCRIPT_PATH"
   test_install_creates_layout
   test_install_bootstraps_acme_without_crontab
+  test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config
   test_add_tcp_tls_generates_stream_config_and_cert_files
   test_invalid_port_is_rejected
   test_delete_removes_rule_and_configs
   test_list_and_show_display_rule_details
+  test_interactive_menu_is_chinese
   echo "All tests passed"
 }
 

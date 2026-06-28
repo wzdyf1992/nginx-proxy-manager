@@ -16,6 +16,7 @@ STREAMS_AVAILABLE_DIR="$NPMGR_NGINX_ETC/streams-available"
 STREAMS_ENABLED_DIR="$NPMGR_NGINX_ETC/streams-enabled"
 NPMGR_ACME_HOME="${NPMGR_ACME_HOME:-$HOME/.acme.sh}"
 NPMGR_SYSTEMCTL_BIN="${NPMGR_SYSTEMCTL_BIN:-systemctl}"
+NPMGR_APT_GET_BIN="${NPMGR_APT_GET_BIN:-apt-get}"
 NPMGR_TEST_MODE="${NPMGR_TEST_MODE:-0}"
 
 log() {
@@ -333,11 +334,8 @@ check_debian_13() {
 }
 
 install_dependencies() {
-  if [[ "$NPMGR_TEST_MODE" == "1" ]]; then
-    return
-  fi
-  apt-get update
-  apt-get install -y nginx curl jq socat cron
+  "$NPMGR_APT_GET_BIN" update
+  "$NPMGR_APT_GET_BIN" install -y nginx curl jq cron
 }
 
 install_acme_sh() {
@@ -703,6 +701,26 @@ prompt() {
   fi
 }
 
+command_label() {
+  case "$1" in
+    install) printf '安装依赖并初始化环境' ;;
+    add-http) printf '添加 HTTP/HTTPS 反向代理' ;;
+    add-tcp) printf '添加 TCP 转发规则' ;;
+    list) printf '查看规则列表' ;;
+    show) printf '查看单条规则详情' ;;
+    edit) printf '修改已有规则' ;;
+    delete) printf '删除规则' ;;
+    enable) printf '启用规则' ;;
+    disable) printf '禁用规则' ;;
+    reload) printf '重新加载 Nginx' ;;
+    renew-certs) printf '执行证书续期' ;;
+    cf-dns-check) printf '检查 Cloudflare 凭据' ;;
+    version) printf '查看脚本版本' ;;
+    help) printf '查看帮助' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 interactive_add_http() {
   local name domain listen upstream_host upstream_port https auto_dns cf_zone cf_record upstream_proto
   name="$(prompt '规则名')"
@@ -739,20 +757,20 @@ interactive_add_tcp() {
 interactive_menu() {
   while true; do
     cat <<'EOF'
-======== Nginx Proxy Manager ========
-1) install
-2) add-http
-3) add-tcp
-4) list
-5) show
-6) edit
-7) delete
-8) enable
-9) disable
-10) reload
-11) renew-certs
-12) cf-dns-check
-0) exit
+======== Nginx 代理管理 ========
+1) 安装依赖并初始化环境
+2) 添加 HTTP/HTTPS 反向代理
+3) 添加 TCP 转发规则
+4) 查看规则列表
+5) 查看单条规则详情
+6) 修改已有规则
+7) 删除规则
+8) 启用规则
+9) 禁用规则
+10) 重新加载 Nginx
+11) 执行证书续期
+12) 检查 Cloudflare 凭据
+0) 退出
 EOF
     local choice
     choice="$(prompt '请选择操作' '0')"
@@ -765,7 +783,7 @@ EOF
       6)
         local rule_name
         rule_name="$(prompt '规则名')"
-        warn "edit 菜单暂不做逐字段引导，请使用命令行方式。"
+        warn "修改规则的交互式逐字段向导暂未完成，请先使用命令行方式。"
         show_rule "$rule_name"
         ;;
       7) delete_rule "$(prompt '规则名')" ;;
@@ -825,12 +843,12 @@ main() {
       list_rules
       ;;
     show)
-      [[ $# -ge 1 ]] || die "show 需要规则名。"
+      [[ $# -ge 1 ]] || die "$(command_label show) 需要规则名。"
       ensure_layout
       show_rule "$1"
       ;;
     edit)
-      [[ $# -ge 1 ]] || die "edit 需要规则名。"
+      [[ $# -ge 1 ]] || die "$(command_label edit) 需要规则名。"
       require_root
       assert_runtime_dependencies
       ensure_layout
@@ -839,21 +857,21 @@ main() {
       edit_rule "$rule_name" "$@"
       ;;
     delete)
-      [[ $# -ge 1 ]] || die "delete 需要规则名。"
+      [[ $# -ge 1 ]] || die "$(command_label delete) 需要规则名。"
       require_root
       assert_runtime_dependencies
       ensure_layout
       delete_rule "$1"
       ;;
     enable)
-      [[ $# -ge 1 ]] || die "enable 需要规则名。"
+      [[ $# -ge 1 ]] || die "$(command_label enable) 需要规则名。"
       require_root
       assert_runtime_dependencies
       ensure_layout
       set_rule_enabled_state "$1" "on"
       ;;
     disable)
-      [[ $# -ge 1 ]] || die "disable 需要规则名。"
+      [[ $# -ge 1 ]] || die "$(command_label disable) 需要规则名。"
       require_root
       assert_runtime_dependencies
       ensure_layout
