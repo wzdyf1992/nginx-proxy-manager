@@ -2,6 +2,20 @@
 
 一个面向 `Debian 13` 的 Bash 工具，用来自动管理 `Nginx` 反向代理、`stream TCP` 转发、`Cloudflare DNS` 和 `acme.sh` 证书申请。
 
+## 一键运行
+
+适合在全新 `Debian 13` 服务器上直接执行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/wzdyf1992/nginx-proxy-manager/main/nginx-proxy-manager.sh) install
+```
+
+初始化完成后，可继续进入交互菜单：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/wzdyf1992/nginx-proxy-manager/main/nginx-proxy-manager.sh)
+```
+
 ## 功能
 
 - 交互式菜单 + 命令行两种使用方式
