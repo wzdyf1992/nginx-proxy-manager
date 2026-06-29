@@ -78,6 +78,12 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-t" ]]; then
+  if compgen -G "${NPMGR_NGINX_ETC}/sites-enabled/*.conf" >/dev/null; then
+    if ! grep -F "sites-enabled/*.conf" "${NPMGR_NGINX_ETC}/conf.d/npmgr-http-includes.conf" >/dev/null 2>&1; then
+      echo "nginx: no http include configured" >&2
+      exit 1
+    fi
+  fi
   if [[ -f "${NPMGR_NGINX_ETC}/modules-enabled/50-mod-stream.conf" ]]; then
     module_path="$(sed -n 's/^[[:space:]]*load_module[[:space:]]\+\([^;]*\);.*/\1/p' "${NPMGR_NGINX_ETC}/modules-enabled/50-mod-stream.conf" | head -n 1)"
     if [[ "$module_path" == modules/* ]]; then
@@ -364,6 +370,20 @@ test_add_http_generates_rule_and_nginx_config() {
   assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf" "proxy_pass http://127.0.0.1:3000;"
   assert_file_contains "$NPMGR_BASE_DIR/runtime/acme.log" "--server letsencrypt"
   assert_symlink_target "$NPMGR_NGINX_ETC/sites-enabled/npmgr-blog.conf" "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf"
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/systemctl.log" "reload nginx"
+  teardown_env
+}
+
+test_add_http_initializes_http_include_without_install() {
+  setup_env
+  run_cmd add-http \
+    --name direct \
+    --listen 8087 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off >/tmp/npmgr-direct-http.out
+  assert_file_contains "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "sites-enabled/*.conf"
+  assert_file_contains "$NPMGR_BASE_DIR/rules/direct.conf" "RULE_TYPE=http"
   assert_file_contains "$NPMGR_BASE_DIR/runtime/systemctl.log" "reload nginx"
   teardown_env
 }
@@ -715,6 +735,7 @@ main() {
   test_install_bootstraps_acme_without_crontab
   test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config
+  test_add_http_initializes_http_include_without_install
   test_http_domain_rules_can_share_https_port
   test_http_same_domain_same_port_is_rejected
   test_add_http_reports_cert_failure_and_keeps_rule

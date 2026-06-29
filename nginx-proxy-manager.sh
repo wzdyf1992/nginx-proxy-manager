@@ -319,6 +319,7 @@ ensure_layout() {
   ensure_directory "$NPMGR_NGINX_ETC/modules-enabled"
   ensure_directory "$NPMGR_NGINX_ETC/conf.d"
   cleanup_legacy_stream_config
+  ensure_http_include
 }
 
 cleanup_legacy_stream_config() {
@@ -330,9 +331,13 @@ cleanup_legacy_stream_config() {
   fi
 }
 
-install_include_snippets() {
+ensure_http_include() {
   write_file "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "include $SITES_ENABLED_DIR/*.conf;
 "
+}
+
+install_include_snippets() {
+  ensure_http_include
   cleanup_legacy_stream_config
 }
 
