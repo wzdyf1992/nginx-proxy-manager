@@ -585,6 +585,16 @@ test_reload_renew_and_cf_check_work() {
   teardown_env
 }
 
+test_reload_removes_legacy_stream_include() {
+  setup_env
+  run_cmd install >/dev/null
+  printf 'stream { include %s/*.conf; }\n' "$NPMGR_NGINX_ETC/streams-enabled" >"$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf"
+  run_cmd reload >/tmp/npmgr-reload-legacy-stream.out
+  assert_not_exists "$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf"
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/systemctl.log" "reload nginx"
+  teardown_env
+}
+
 test_save_cloudflare_credentials_and_auto_load() {
   setup_env
   unset CF_Token
@@ -668,6 +678,7 @@ main() {
   test_list_and_show_display_rule_details
   test_edit_and_enable_disable_work
   test_reload_renew_and_cf_check_work
+  test_reload_removes_legacy_stream_include
   test_save_cloudflare_credentials_and_auto_load
   test_save_cloudflare_credentials_with_special_chars
   test_help_and_version_are_available

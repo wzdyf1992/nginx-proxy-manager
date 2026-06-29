@@ -473,6 +473,7 @@ get_acme_cmd() {
 
 reload_nginx() {
   require_command nginx
+  ensure_layout
   nginx -t >/dev/null
   "$NPMGR_SYSTEMCTL_BIN" reload nginx
 }
