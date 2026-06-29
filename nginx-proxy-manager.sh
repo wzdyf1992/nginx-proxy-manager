@@ -332,8 +332,19 @@ cleanup_legacy_stream_config() {
 }
 
 ensure_http_include() {
-  write_file "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "include $SITES_ENABLED_DIR/*.conf;
+  local include_file="$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf"
+  if nginx_conf_includes_sites_enabled; then
+    rm -f "$include_file"
+    return
+  fi
+  write_file "$include_file" "include $SITES_ENABLED_DIR/*.conf;
 "
+}
+
+nginx_conf_includes_sites_enabled() {
+  local nginx_conf="$NPMGR_NGINX_ETC/nginx.conf"
+  [[ -f "$nginx_conf" ]] || return 1
+  grep -Eq "include[[:space:]]+[^;]*sites-enabled/\\*([^.;[:space:]]*)?;" "$nginx_conf"
 }
 
 install_include_snippets() {

@@ -68,6 +68,7 @@ include modules-enabled/*.conf;
 events {}
 http {
   include conf.d/*.conf;
+  include sites-enabled/*;
 }
 EOF
   if [[ "$with_stream" == "1" ]]; then
@@ -79,8 +80,15 @@ EOF
 set -euo pipefail
 if [[ "${1:-}" == "-t" ]]; then
   if compgen -G "${NPMGR_NGINX_ETC}/sites-enabled/*.conf" >/dev/null; then
-    if ! grep -F "sites-enabled/*.conf" "${NPMGR_NGINX_ETC}/conf.d/npmgr-http-includes.conf" >/dev/null 2>&1; then
+    main_include_count="$( (grep -F "sites-enabled/*" "${NPMGR_NGINX_ETC}/nginx.conf" 2>/dev/null || true) | wc -l | tr -d ' ')"
+    confd_include_count="$( (grep -R -F "sites-enabled/*.conf" "${NPMGR_NGINX_ETC}/conf.d" 2>/dev/null || true) | wc -l | tr -d ' ')"
+    include_count=$((main_include_count + confd_include_count))
+    if [[ "$include_count" -eq 0 ]]; then
       echo "nginx: no http include configured" >&2
+      exit 1
+    fi
+    if [[ "$include_count" -gt 1 ]]; then
+      echo "nginx: duplicate http include configured" >&2
       exit 1
     fi
   fi
@@ -300,7 +308,7 @@ test_install_creates_layout() {
   assert_exists "$NPMGR_BASE_DIR/runtime"
   assert_exists "$NPMGR_NGINX_ETC/sites-available"
   assert_exists "$NPMGR_NGINX_ETC/streams-enabled"
-  assert_file_contains "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "sites-enabled/*.conf"
+  assert_not_exists "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf"
   assert_not_exists "$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf"
   assert_not_exists "$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf"
   teardown_env
@@ -382,7 +390,7 @@ test_add_http_initializes_http_include_without_install() {
     --upstream-host 127.0.0.1 \
     --upstream-port 3000 \
     --https off >/tmp/npmgr-direct-http.out
-  assert_file_contains "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "sites-enabled/*.conf"
+  assert_not_exists "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf"
   assert_file_contains "$NPMGR_BASE_DIR/rules/direct.conf" "RULE_TYPE=http"
   assert_file_contains "$NPMGR_BASE_DIR/runtime/systemctl.log" "reload nginx"
   teardown_env
