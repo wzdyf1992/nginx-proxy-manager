@@ -157,7 +157,8 @@ EOF
 #!/usr/bin/env python3
 import json, sys
 data = json.load(sys.stdin)
-expr = sys.argv[1]
+args = [arg for arg in sys.argv[1:] if arg != '-r']
+expr = args[0]
 if expr == '.success':
     print('true' if data.get('success') else 'false')
 elif expr == '.result[0].id // empty':
@@ -320,6 +321,7 @@ test_auto_dns_creates_cloudflare_record() {
     --cf-record-name dns.example.com >/tmp/npmgr-dns-create.out
   assert_file_contains "$NPMGR_BASE_DIR/runtime/curl.log" "-X POST"
   assert_file_contains "$NPMGR_BASE_DIR/runtime/curl.log" "/zones/zone123/dns_records"
+  assert_not_contains "$(cat "$NPMGR_BASE_DIR/runtime/curl.log")" '/zones/"zone123"/dns_records'
   teardown_env
 }
 
