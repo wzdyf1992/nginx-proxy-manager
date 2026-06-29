@@ -634,7 +634,7 @@ test_delete_removes_rule_and_configs() {
   teardown_env
 }
 
-test_list_and_show_display_rule_details() {
+test_list_displays_rule_routes() {
   setup_env
   run_cmd install >/dev/null
   run_cmd add-http \
@@ -643,12 +643,58 @@ test_list_and_show_display_rule_details() {
     --upstream-host 192.168.1.10 \
     --upstream-port 8080 \
     --https off >/dev/null
+  run_cmd add-http \
+    --name app2 \
+    --domain app2.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off >/dev/null
   local list_output
-  local show_output
   list_output="$(run_cmd list)"
-  show_output="$(run_cmd show app1)"
   assert_contains "$list_output" "app1"
+  assert_contains "$list_output" "0.0.0.0:8081"
+  assert_contains "$list_output" "192.168.1.10:8080"
+  assert_contains "$list_output" "app2.example.com:443"
+  assert_contains "$list_output" "127.0.0.1:3000"
+  assert_contains "$list_output" "HTTP"
+  assert_contains "$list_output" "启用"
+  teardown_env
+}
+
+test_show_still_displays_raw_rule_for_compatibility() {
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd add-http \
+    --name app1 \
+    --listen 8081 \
+    --upstream-host 192.168.1.10 \
+    --upstream-port 8080 \
+    --https off >/dev/null
+  local show_output
+  show_output="$(run_cmd show app1)"
   assert_contains "$show_output" "UPSTREAM_HOST=192.168.1.10"
+  teardown_env
+}
+
+test_list_certs_displays_expiry_and_usage() {
+  setup_env
+  run_cmd install >/dev/null
+  export NPMGR_ACME_ISSUE_SKIP=1
+  run_cmd add-http \
+    --name certapp \
+    --domain cert.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https on >/dev/null
+  local cert_output
+  cert_output="$(run_cmd certs)"
+  assert_contains "$cert_output" "cert.example.com"
+  assert_contains "$cert_output" "Apr  1 00:00:00 2026 GMT"
+  assert_contains "$cert_output" "certapp"
+  assert_contains "$cert_output" "$NPMGR_BASE_DIR/certs/cert.example.com/fullchain.pem"
+  unset NPMGR_ACME_ISSUE_SKIP
   teardown_env
 }
 
@@ -799,7 +845,9 @@ main() {
   test_add_tcp_requires_stream_module
   test_invalid_port_is_rejected
   test_delete_removes_rule_and_configs
-  test_list_and_show_display_rule_details
+  test_list_displays_rule_routes
+  test_show_still_displays_raw_rule_for_compatibility
+  test_list_certs_displays_expiry_and_usage
   test_diagnose_displays_rule_config_and_certificate
   test_edit_and_enable_disable_work
   test_reload_renew_and_cf_check_work

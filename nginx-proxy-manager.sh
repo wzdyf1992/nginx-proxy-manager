@@ -805,18 +805,87 @@ add_tcp_rule() {
 
 list_rules() {
   local path count=0
+  printf '%-18s %-6s %-24s %-24s %-8s %-8s %-8s\n' "规则名" "类型" "入口" "转发到" "HTTPS/TLS" "DNS" "状态"
   shopt -s nullglob
   for path in "$RULES_DIR"/*.conf; do
     count=$((count + 1))
-    unset RULE_NAME RULE_TYPE LISTEN_PORT ENABLED SERVER_NAME
+    unset RULE_NAME RULE_TYPE SERVER_NAME LISTEN_PORT UPSTREAM_HOST UPSTREAM_PORT UPSTREAM_PROTO ENABLE_HTTPS AUTO_DNS ENABLED TLS_MODE
     # shellcheck disable=SC1090
     source "$path"
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "${RULE_NAME:-未知}" "${RULE_TYPE:-未知}" "${LISTEN_PORT:-0}" "${ENABLED:-on}" "${SERVER_NAME:-}"
+    local entry target tls_state dns_state enabled_state
+    if [[ "${RULE_TYPE:-}" == "http" ]]; then
+      if [[ -n "${SERVER_NAME:-}" ]]; then
+        entry="${SERVER_NAME}:${LISTEN_PORT:-0}"
+      else
+        entry="0.0.0.0:${LISTEN_PORT:-0}"
+      fi
+      target="${UPSTREAM_PROTO:-http}://${UPSTREAM_HOST:-?}:${UPSTREAM_PORT:-?}"
+      tls_state="${ENABLE_HTTPS:-off}"
+      dns_state="${AUTO_DNS:-off}"
+    elif [[ "${RULE_TYPE:-}" == "tcp" ]]; then
+      if [[ -n "${SERVER_NAME:-}" ]]; then
+        entry="${SERVER_NAME}:${LISTEN_PORT:-0}"
+      else
+        entry="0.0.0.0:${LISTEN_PORT:-0}"
+      fi
+      target="${UPSTREAM_HOST:-?}:${UPSTREAM_PORT:-?}"
+      tls_state="${TLS_MODE:-passthrough}"
+      dns_state="-"
+    else
+      entry="?:${LISTEN_PORT:-0}"
+      target="${UPSTREAM_HOST:-?}:${UPSTREAM_PORT:-?}"
+      tls_state="-"
+      dns_state="-"
+    fi
+    if [[ "${ENABLED:-on}" == "on" ]]; then
+      enabled_state="启用"
+    else
+      enabled_state="禁用"
+    fi
+    printf '%-18s %-6s %-24s %-24s %-8s %-8s %-8s\n' \
+      "${RULE_NAME:-未知}" "${RULE_TYPE:-未知}" "$entry" "$target" "$tls_state" "$dns_state" "$enabled_state"
   done
   shopt -u nullglob
   if [[ $count -eq 0 ]]; then
     log "当前没有规则。"
+  fi
+}
+
+cert_usage_for_domain() {
+  local domain="$1"
+  local path usage=''
+  shopt -s nullglob
+  for path in "$RULES_DIR"/*.conf; do
+    unset RULE_NAME RULE_TYPE SERVER_NAME ENABLE_HTTPS TLS_MODE ENABLED
+    # shellcheck disable=SC1090
+    source "$path"
+    if [[ "${SERVER_NAME:-}" == "$domain" && ( "${ENABLE_HTTPS:-off}" == "on" || "${TLS_MODE:-}" == "terminate" ) ]]; then
+      if [[ -n "$usage" ]]; then
+        usage="${usage},"
+      fi
+      usage="${usage}${RULE_NAME:-未知}"
+    fi
+  done
+  shopt -u nullglob
+  printf '%s' "${usage:-未被规则使用}"
+}
+
+list_certs() {
+  local cert_path count=0
+  printf '%-32s %-32s %-22s %s\n' "域名" "到期时间" "使用规则" "证书文件"
+  shopt -s nullglob
+  for cert_path in "$CERTS_DIR"/*/fullchain.pem; do
+    count=$((count + 1))
+    local domain expiry usage
+    domain="$(basename "$(dirname "$cert_path")")"
+    expiry="$(openssl x509 -in "$cert_path" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')"
+    [[ -n "$expiry" ]] || expiry="无法读取"
+    usage="$(cert_usage_for_domain "$domain")"
+    printf '%-32s %-32s %-22s %s\n' "$domain" "$expiry" "$usage" "$cert_path"
+  done
+  shopt -u nullglob
+  if [[ $count -eq 0 ]]; then
+    log "当前没有已安装证书。"
   fi
 }
 
@@ -991,6 +1060,7 @@ usage() {
   $SCRIPT_NAME add-http [参数]
   $SCRIPT_NAME add-tcp [参数]
   $SCRIPT_NAME list
+  $SCRIPT_NAME certs
   $SCRIPT_NAME show <rule_name>
   $SCRIPT_NAME diagnose <rule_name>
   $SCRIPT_NAME edit <rule_name> [参数]
@@ -1029,6 +1099,7 @@ command_label() {
     add-http) printf '添加 HTTP/HTTPS 反向代理' ;;
     add-tcp) printf '添加 TCP 转发规则' ;;
     list) printf '查看规则列表' ;;
+    certs) printf '查看证书信息' ;;
     show) printf '查看单条规则详情' ;;
     diagnose) printf '诊断规则配置' ;;
     edit) printf '修改已有规则' ;;
@@ -1118,7 +1189,7 @@ interactive_menu() {
 3) 添加 HTTP/HTTPS 反向代理
 4) 添加 TCP 转发规则
 5) 查看规则列表
-6) 查看单条规则详情
+6) 查看证书信息
 7) 诊断规则配置
 8) 修改已有规则
 9) 删除规则
@@ -1137,7 +1208,7 @@ EOF
       3) interactive_add_http ;;
       4) interactive_add_tcp ;;
       5) list_rules ;;
-      6) show_rule "$(prompt '规则名')" ;;
+      6) list_certs ;;
       7) diagnose_rule "$(prompt '规则名')" ;;
       8)
         local rule_name
@@ -1215,6 +1286,10 @@ main() {
     list)
       ensure_layout
       list_rules
+      ;;
+    certs)
+      ensure_layout
+      list_certs
       ;;
     show)
       [[ $# -ge 1 ]] || die "$(command_label show) 需要规则名。"
