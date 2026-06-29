@@ -315,6 +315,21 @@ test_install_does_not_break_http_without_stream_module() {
   teardown_env
 }
 
+test_add_http_removes_legacy_broken_stream_loader() {
+  setup_env 1 0 1
+  mkdir -p "$NPMGR_NGINX_ETC/modules-enabled"
+  printf 'load_module modules/ngx_stream_module.so;\n' >"$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf"
+  run_cmd add-http \
+    --name legacy-stream \
+    --listen 8089 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off >/tmp/npmgr-legacy-stream.out
+  assert_file_contains "$NPMGR_BASE_DIR/rules/legacy-stream.conf" "RULE_TYPE=http"
+  assert_not_exists "$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf"
+  teardown_env
+}
+
 test_install_bootstraps_acme_without_crontab() {
   setup_env 0
   run_cmd install >/tmp/npmgr-install-acme.out
@@ -637,6 +652,7 @@ main() {
   [[ -x "$SCRIPT_PATH" ]] || fail "script not found: $SCRIPT_PATH"
   test_install_creates_layout
   test_install_does_not_break_http_without_stream_module
+  test_add_http_removes_legacy_broken_stream_loader
   test_install_bootstraps_acme_without_crontab
   test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config

@@ -326,10 +326,7 @@ cleanup_legacy_stream_config() {
   local stream_conf="$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf"
   rm -f "$stream_conf"
   if [[ -f "$module_file" ]] && grep -Fx 'load_module modules/ngx_stream_module.so;' "$module_file" >/dev/null 2>&1; then
-    local relative_module_path="$NPMGR_NGINX_ETC/modules/ngx_stream_module.so"
-    if [[ ! -f "$relative_module_path" && -z "$(find_stream_module_file)" ]]; then
-      rm -f "$module_file"
-    fi
+    rm -f "$module_file"
   fi
 }
 
