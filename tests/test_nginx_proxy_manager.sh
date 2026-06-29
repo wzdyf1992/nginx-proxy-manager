@@ -51,6 +51,7 @@ assert_symlink_target() {
 
 setup_env() {
   local with_acme="${1:-1}"
+  local acme_issue_fail="${2:-0}"
   TMP_ROOT="$(mktemp -d)"
   export NPMGR_TEST_MODE=1
   export NPMGR_BASE_DIR="$TMP_ROOT/etc/nginx-proxy-manager"
@@ -147,6 +148,10 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >>"${NPMGR_BASE_DIR}/runtime/acme.log"
+if [[ "${NPMGR_ACME_ISSUE_FAIL:-0}" == "1" && "$*" == *"--issue"* ]]; then
+  echo "[mock acme] issue failed" >&2
+  exit 1
+fi
 if [[ "$*" == *"--install-cert"* ]]; then
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -170,6 +175,7 @@ EOF
   if [[ "$with_acme" == "1" ]]; then
     chmod +x "$TMP_ROOT/bin/acme.sh"
   fi
+  export NPMGR_ACME_ISSUE_FAIL="$acme_issue_fail"
   export PATH="$TMP_ROOT/bin:$PATH"
 }
 
@@ -227,6 +233,25 @@ test_add_http_generates_rule_and_nginx_config() {
   assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf" "proxy_pass http://127.0.0.1:3000;"
   assert_symlink_target "$NPMGR_NGINX_ETC/sites-enabled/npmgr-blog.conf" "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf"
   assert_file_contains "$NPMGR_BASE_DIR/runtime/systemctl.log" "reload nginx"
+  teardown_env
+}
+
+test_add_http_reports_cert_failure_and_keeps_rule() {
+  setup_env 1 1
+  run_cmd install >/dev/null
+  if run_cmd add-http \
+    --name broken-cert \
+    --domain broken.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https on \
+    --auto-dns off >/tmp/npmgr-cert-fail.out 2>&1; then
+    fail "expected add-http to fail when certificate issuance fails"
+  fi
+  assert_file_contains "$NPMGR_BASE_DIR/rules/broken-cert.conf" "RULE_NAME=broken-cert"
+  assert_file_contains "$NPMGR_BASE_DIR/rules/broken-cert.conf" "ENABLED=off"
+  assert_contains "$(cat /tmp/npmgr-cert-fail.out)" "证书"
   teardown_env
 }
 
@@ -398,6 +423,7 @@ main() {
   test_install_bootstraps_acme_without_crontab
   test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config
+  test_add_http_reports_cert_failure_and_keeps_rule
   test_add_tcp_tls_generates_stream_config_and_cert_files
   test_invalid_port_is_rejected
   test_delete_removes_rule_and_configs

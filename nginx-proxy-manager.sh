@@ -449,10 +449,10 @@ issue_certificate() {
   load_cloudflare_credentials
   [[ -n "${CF_Token:-}" ]] || die "申请证书前请设置 CF_Token。"
   ensure_directory "$CERTS_DIR/$domain"
-  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --issue --dns dns_cf -d "$domain" >/dev/null
+  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --issue --dns dns_cf -d "$domain" >/dev/null || return 1
   CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --install-cert -d "$domain" \
     --fullchain-file "$CERTS_DIR/$domain/fullchain.pem" \
-    --key-file "$CERTS_DIR/$domain/privkey.pem" >/dev/null
+    --key-file "$CERTS_DIR/$domain/privkey.pem" >/dev/null || return 1
 }
 
 render_rule_from_file() {
@@ -480,6 +480,14 @@ save_http_rule() {
 save_tcp_rule() {
   local path="$RULES_DIR/$RULE_NAME.conf"
   save_rule_file "$path" "$(build_tcp_rule_content)"
+}
+
+run_and_capture_failure() {
+  set +e
+  "$@"
+  local status=$?
+  set -e
+  return "$status"
 }
 
 port_conflict_check() {
@@ -537,6 +545,22 @@ apply_http_side_effects() {
   fi
 }
 
+disable_rule_file() {
+  local rule_name="$1"
+  local path="$RULES_DIR/$rule_name.conf"
+  [[ -f "$path" ]] || return 0
+  sed "s/^ENABLED=.*/ENABLED=off/" "$path" >"${path}.tmp"
+  mv "${path}.tmp" "$path"
+}
+
+handle_rule_apply_failure() {
+  local rule_name="$1"
+  local reason="$2"
+  disable_rule_file "$rule_name"
+  remove_rendered_rule "$rule_name"
+  die "规则已保存，但后续应用失败：${reason}。该规则已被自动禁用，请修正后用 edit 或 enable 重试。"
+}
+
 apply_tcp_side_effects() {
   if [[ "$TLS_MODE" == "terminate" ]]; then
     issue_certificate "$SERVER_NAME"
@@ -560,9 +584,13 @@ add_http_rule() {
   parse_http_args "$@"
   validate_http_rule
   port_conflict_check "$LISTEN_PORT"
-  apply_http_side_effects
   save_http_rule
-  render_http_rule
+  if ! run_and_capture_failure apply_http_side_effects; then
+    handle_rule_apply_failure "$RULE_NAME" "DNS 或证书申请失败"
+  fi
+  if ! run_and_capture_failure render_http_rule; then
+    handle_rule_apply_failure "$RULE_NAME" "Nginx 配置生成失败"
+  fi
   reload_nginx
   log "HTTP 规则已创建: $RULE_NAME"
 }
@@ -580,9 +608,13 @@ add_tcp_rule() {
   parse_tcp_args "$@"
   validate_tcp_rule
   port_conflict_check "$LISTEN_PORT"
-  apply_tcp_side_effects
   save_tcp_rule
-  render_tcp_rule
+  if ! run_and_capture_failure apply_tcp_side_effects; then
+    handle_rule_apply_failure "$RULE_NAME" "证书申请失败"
+  fi
+  if ! run_and_capture_failure render_tcp_rule; then
+    handle_rule_apply_failure "$RULE_NAME" "Nginx 配置生成失败"
+  fi
   reload_nginx
   log "TCP 规则已创建: $RULE_NAME"
 }
@@ -649,18 +681,24 @@ edit_rule() {
     parse_http_args "$@"
     validate_http_rule
     port_conflict_check "$LISTEN_PORT" "$rule_name"
-    apply_http_side_effects
     save_http_rule
+    if ! run_and_capture_failure apply_http_side_effects; then
+      handle_rule_apply_failure "$RULE_NAME" "DNS 或证书申请失败"
+    fi
   else
     load_existing_tcp_defaults
     RULE_NAME="$rule_name"
     parse_tcp_args "$@"
     validate_tcp_rule
     port_conflict_check "$LISTEN_PORT" "$rule_name"
-    apply_tcp_side_effects
     save_tcp_rule
+    if ! run_and_capture_failure apply_tcp_side_effects; then
+      handle_rule_apply_failure "$RULE_NAME" "证书申请失败"
+    fi
   fi
-  render_rule_from_file "$rule_name"
+  if ! run_and_capture_failure render_rule_from_file "$rule_name"; then
+    handle_rule_apply_failure "$RULE_NAME" "Nginx 配置生成失败"
+  fi
   reload_nginx
   log "规则已更新: $rule_name"
 }
