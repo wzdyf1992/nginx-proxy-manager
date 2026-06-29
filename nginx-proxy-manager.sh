@@ -216,6 +216,7 @@ build_http_nginx_config() {
   local redirect_block=''
   local tls_block=''
   local server_name_line='_'
+  local listen_options=''
   local upstream="${UPSTREAM_PROTO}://${UPSTREAM_HOST}:${UPSTREAM_PORT}"
 
   if [[ -n "${SERVER_NAME:-}" ]]; then
@@ -224,6 +225,7 @@ build_http_nginx_config() {
 
   if [[ "$ENABLE_HTTPS" == "on" ]]; then
     local cert_dir="$CERTS_DIR/$SERVER_NAME"
+    listen_options=' ssl'
     tls_block=$(cat <<EOF
     ssl_certificate ${cert_dir}/fullchain.pem;
     ssl_certificate_key ${cert_dir}/privkey.pem;
@@ -243,7 +245,7 @@ EOF
 
   cat <<EOF
 ${redirect_block}server {
-    listen ${LISTEN_PORT}${ENABLE_HTTPS:+};
+    listen ${LISTEN_PORT}${listen_options};
     server_name ${server_name_line};
 ${tls_block}
     location / {
@@ -289,6 +291,7 @@ render_http_rule() {
 }
 
 render_tcp_rule() {
+  ensure_stream_support
   local available_path="$STREAMS_AVAILABLE_DIR/npmgr-$RULE_NAME.conf"
   local enabled_path="$STREAMS_ENABLED_DIR/npmgr-$RULE_NAME.conf"
   local tmp_path="${available_path}.tmp"
@@ -315,21 +318,109 @@ ensure_layout() {
   ensure_directory "$STREAMS_ENABLED_DIR"
   ensure_directory "$NPMGR_NGINX_ETC/modules-enabled"
   ensure_directory "$NPMGR_NGINX_ETC/conf.d"
+  cleanup_legacy_stream_config
 }
 
-install_stream_module_stub() {
+cleanup_legacy_stream_config() {
   local module_file="$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf"
-  if [[ ! -f "$module_file" ]]; then
-    write_file "$module_file" "load_module modules/ngx_stream_module.so;
-"
+  local stream_conf="$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf"
+  rm -f "$stream_conf"
+  if [[ -f "$module_file" ]] && grep -Fx 'load_module modules/ngx_stream_module.so;' "$module_file" >/dev/null 2>&1; then
+    local relative_module_path="$NPMGR_NGINX_ETC/modules/ngx_stream_module.so"
+    if [[ ! -f "$relative_module_path" && -z "$(find_stream_module_file)" ]]; then
+      rm -f "$module_file"
+    fi
   fi
 }
 
 install_include_snippets() {
   write_file "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "include $SITES_ENABLED_DIR/*.conf;
 "
-  write_file "$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf" "stream { include $STREAMS_ENABLED_DIR/*.conf; }
+  cleanup_legacy_stream_config
+}
+
+nginx_version_output() {
+  nginx -V 2>&1 || true
+}
+
+nginx_has_builtin_stream() {
+  nginx_version_output | grep -Eq '(^|[[:space:]])--with-stream([[:space:]]|$)'
+}
+
+nginx_modules_path() {
+  local output modules_path
+  output="$(nginx_version_output)"
+  modules_path="$(printf '%s\n' "$output" | sed -n 's/.*--modules-path=\([^[:space:]]*\).*/\1/p' | head -n 1)"
+  if [[ -n "$modules_path" ]]; then
+    printf '%s' "$modules_path"
+  elif [[ -d /usr/lib/nginx/modules ]]; then
+    printf '/usr/lib/nginx/modules'
+  elif [[ -d /usr/share/nginx/modules ]]; then
+    printf '/usr/share/nginx/modules'
+  else
+    printf '%s' "$NPMGR_NGINX_ETC/modules"
+  fi
+}
+
+find_stream_module_file() {
+  local modules_path
+  modules_path="$(nginx_modules_path)"
+  local candidates=(
+    "$modules_path/ngx_stream_module.so"
+    "$NPMGR_NGINX_ETC/modules/ngx_stream_module.so"
+    "/usr/lib/nginx/modules/ngx_stream_module.so"
+    "/usr/share/nginx/modules/ngx_stream_module.so"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_stream_module_loader() {
+  local module_file="$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf"
+  cleanup_legacy_stream_config
+  if nginx_has_builtin_stream; then
+    rm -f "$module_file"
+    return 0
+  fi
+  local stream_module
+  if ! stream_module="$(find_stream_module_file)"; then
+    return 1
+  fi
+  write_file "$module_file" "load_module ${stream_module};
 "
+}
+
+install_stream_include_block() {
+  local nginx_conf="$NPMGR_NGINX_ETC/nginx.conf"
+  [[ -f "$nginx_conf" ]] || die "找不到 Nginx 主配置文件: $nginx_conf"
+  if grep -F 'BEGIN nginx-proxy-manager stream include' "$nginx_conf" >/dev/null 2>&1; then
+    return
+  fi
+  local tmp_path="${nginx_conf}.npmgr.tmp"
+  cat "$nginx_conf" >"$tmp_path"
+  cat >>"$tmp_path" <<EOF
+
+# BEGIN nginx-proxy-manager stream include
+stream {
+    include $STREAMS_ENABLED_DIR/*.conf;
+}
+# END nginx-proxy-manager stream include
+EOF
+  mv "$tmp_path" "$nginx_conf"
+}
+
+ensure_stream_support() {
+  require_command nginx
+  if ! install_stream_module_loader; then
+    die "Nginx stream 模块不可用，TCP 转发功能需要先安装 stream 模块。Debian 通常可执行：apt-get install -y libnginx-mod-stream"
+  fi
+  install_stream_include_block
 }
 
 check_debian_13() {
@@ -438,6 +529,18 @@ ensure_cf_zone() {
   [[ -n "${CF_RECORD_NAME:-}" ]] || CF_RECORD_NAME="$SERVER_NAME"
 }
 
+normalize_cf_record_name() {
+  local record_name="$1"
+  local zone_name="$2"
+  if [[ "$record_name" == "$zone_name" ]]; then
+    printf '%s' "$record_name"
+  elif [[ "$record_name" == *".${zone_name}" ]]; then
+    printf '%s' "$record_name"
+  else
+    printf '%s.%s' "$record_name" "$zone_name"
+  fi
+}
+
 sync_dns_record() {
   ensure_cf_zone || return 1
   cf_dns_check >/dev/null || return 1
@@ -449,7 +552,7 @@ sync_dns_record() {
     warn "找不到 Cloudflare 域名区域：$CF_ZONE"
     return 1
   fi
-  dns_name="$CF_RECORD_NAME"
+  dns_name="$(normalize_cf_record_name "$CF_RECORD_NAME" "$CF_ZONE")"
   ip_address="${PUBLIC_IP_OVERRIDE:-$(curl -sS https://api.ipify.org)}"
   lookup_response="$(cf_api GET "/zones/${zone_id}/dns_records?type=A&name=${dns_name}")"
   ensure_cf_success "$lookup_response" "查询 Cloudflare DNS 记录" || return 1
@@ -462,9 +565,11 @@ EOF
   if [[ -n "$record_id" ]]; then
     write_response="$(cf_api PUT "/zones/${zone_id}/dns_records/${record_id}" "$payload")"
     ensure_cf_success "$write_response" "更新 Cloudflare DNS 记录" || return 1
+    log "DNS 记录已更新：${dns_name} -> ${ip_address}"
   else
     write_response="$(cf_api POST "/zones/${zone_id}/dns_records" "$payload")"
     ensure_cf_success "$write_response" "创建 Cloudflare DNS 记录" || return 1
+    log "DNS 记录已创建：${dns_name} -> ${ip_address}"
   fi
 }
 
@@ -649,6 +754,7 @@ add_tcp_rule() {
   parse_tcp_args "$@"
   validate_tcp_rule
   port_conflict_check "$LISTEN_PORT"
+  ensure_stream_support
   save_tcp_rule
   local current_rule_name="$RULE_NAME"
   if ! run_and_capture_failure apply_tcp_side_effects; then
@@ -994,7 +1100,6 @@ run_install() {
   install_dependencies
   install_acme_sh
   ensure_layout
-  install_stream_module_stub
   install_include_snippets
   assert_runtime_dependencies
   log "安装/初始化完成。"

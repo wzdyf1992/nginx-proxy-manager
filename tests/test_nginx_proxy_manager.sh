@@ -52,6 +52,7 @@ assert_symlink_target() {
 setup_env() {
   local with_acme="${1:-1}"
   local acme_issue_fail="${2:-0}"
+  local with_stream="${3:-0}"
   TMP_ROOT="$(mktemp -d)"
   export NPMGR_TEST_MODE=1
   export NPMGR_BASE_DIR="$TMP_ROOT/etc/nginx-proxy-manager"
@@ -62,15 +63,56 @@ setup_env() {
   export NPMGR_APT_GET_BIN="$TMP_ROOT/bin/apt-get"
   export CF_Token="test-token"
   mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/etc/nginx/modules-enabled" "$TMP_ROOT/etc/nginx/conf.d"
+  cat >"$TMP_ROOT/etc/nginx/nginx.conf" <<'EOF'
+include modules-enabled/*.conf;
+events {}
+http {
+  include conf.d/*.conf;
+}
+EOF
+  if [[ "$with_stream" == "1" ]]; then
+    mkdir -p "$TMP_ROOT/etc/nginx/modules"
+    printf 'mock stream module' >"$TMP_ROOT/etc/nginx/modules/ngx_stream_module.so"
+  fi
   cat >"$TMP_ROOT/bin/nginx" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-t" ]]; then
+  if [[ -f "${NPMGR_NGINX_ETC}/modules-enabled/50-mod-stream.conf" ]]; then
+    module_path="$(sed -n 's/^[[:space:]]*load_module[[:space:]]\+\([^;]*\);.*/\1/p' "${NPMGR_NGINX_ETC}/modules-enabled/50-mod-stream.conf" | head -n 1)"
+    if [[ "$module_path" == modules/* ]]; then
+      module_path="${NPMGR_NGINX_ETC}/${module_path}"
+    fi
+    if [[ -n "$module_path" && ! -f "$module_path" ]]; then
+      echo "nginx: dlopen() \"$module_path\" failed" >&2
+      exit 1
+    fi
+  fi
+  if [[ -f "${NPMGR_NGINX_ETC}/conf.d/npmgr-stream-includes.conf" ]]; then
+    echo "nginx: \"stream\" directive is not allowed here" >&2
+    exit 1
+  fi
+  if compgen -G "${NPMGR_NGINX_ETC}/streams-enabled/*.conf" >/dev/null; then
+    if ! grep -F "BEGIN nginx-proxy-manager stream include" "${NPMGR_NGINX_ETC}/nginx.conf" >/dev/null 2>&1; then
+      echo "nginx: no stream include configured" >&2
+      exit 1
+    fi
+  fi
   if grep -R "INVALID_DIRECTIVE" "${NPMGR_NGINX_ETC}" >/dev/null 2>&1; then
     echo "nginx: configuration test failed" >&2
     exit 1
   fi
   echo "nginx: configuration file ${NPMGR_NGINX_ETC}/nginx.conf test is successful"
+  exit 0
+fi
+if [[ "${1:-}" == "-V" ]]; then
+  if [[ -f "${NPMGR_NGINX_ETC}/modules/ngx_stream_module.so" ]]; then
+    echo "nginx version: nginx/1.26.3" >&2
+    echo "configure arguments: --with-compat --with-stream=dynamic" >&2
+  else
+    echo "nginx version: nginx/1.26.3" >&2
+    echo "configure arguments: --with-compat" >&2
+  fi
   exit 0
 fi
 echo "fake nginx $*"
@@ -244,7 +286,23 @@ test_install_creates_layout() {
   assert_exists "$NPMGR_NGINX_ETC/sites-available"
   assert_exists "$NPMGR_NGINX_ETC/streams-enabled"
   assert_file_contains "$NPMGR_NGINX_ETC/conf.d/npmgr-http-includes.conf" "sites-enabled/*.conf"
-  assert_file_contains "$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf" "stream"
+  assert_not_exists "$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf"
+  assert_not_exists "$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf"
+  teardown_env
+}
+
+test_install_does_not_break_http_without_stream_module() {
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd add-http \
+    --name nostream-http \
+    --listen 8088 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off >/tmp/npmgr-no-stream-http.out
+  assert_file_contains "$NPMGR_BASE_DIR/rules/nostream-http.conf" "RULE_TYPE=http"
+  assert_not_exists "$NPMGR_NGINX_ETC/modules-enabled/50-mod-stream.conf"
+  assert_not_exists "$NPMGR_NGINX_ETC/conf.d/npmgr-stream-includes.conf"
   teardown_env
 }
 
@@ -277,6 +335,7 @@ test_add_http_generates_rule_and_nginx_config() {
     --https on \
     --auto-dns off >/tmp/npmgr-http.out
   assert_file_contains "$NPMGR_BASE_DIR/rules/blog.conf" "RULE_TYPE=http"
+  assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf" "listen 443 ssl;"
   assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf" "server_name blog.example.com;"
   assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf" "proxy_pass http://127.0.0.1:3000;"
   assert_file_contains "$NPMGR_BASE_DIR/runtime/acme.log" "--server letsencrypt"
@@ -325,6 +384,25 @@ test_auto_dns_creates_cloudflare_record() {
   teardown_env
 }
 
+test_auto_dns_accepts_short_record_name() {
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd add-http \
+    --name dnsshort \
+    --domain dns.example.com \
+    --listen 446 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off \
+    --auto-dns on \
+    --cf-zone example.com \
+    --cf-record-name dns >/tmp/npmgr-dns-short.out
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/curl.log" "/dns_records?type=A&name=dns.example.com"
+  assert_contains "$(cat /tmp/npmgr-dns-short.out)" "DNS 记录已创建"
+  assert_contains "$(cat "$NPMGR_BASE_DIR/runtime/curl.log")" '"name":"dns.example.com"'
+  teardown_env
+}
+
 test_auto_dns_failure_is_reported_and_rule_kept_disabled() {
   setup_env
   export MOCK_CF_DNS_WRITE_FAIL=1
@@ -347,7 +425,7 @@ test_auto_dns_failure_is_reported_and_rule_kept_disabled() {
 }
 
 test_add_tcp_tls_generates_stream_config_and_cert_files() {
-  setup_env
+  setup_env 1 0 1
   run_cmd install >/dev/null
   run_cmd add-tcp \
     --name ssh-tls \
@@ -361,6 +439,23 @@ test_add_tcp_tls_generates_stream_config_and_cert_files() {
   assert_file_contains "$NPMGR_NGINX_ETC/streams-available/npmgr-ssh-tls.conf" "proxy_pass 127.0.0.1:22;"
   assert_exists "$NPMGR_BASE_DIR/certs/ssh.example.com/fullchain.pem"
   assert_exists "$NPMGR_BASE_DIR/certs/ssh.example.com/privkey.pem"
+  teardown_env
+}
+
+test_add_tcp_requires_stream_module() {
+  setup_env
+  run_cmd install >/dev/null
+  if run_cmd add-tcp \
+    --name tcp-no-stream \
+    --listen 9444 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 22 \
+    --tls-mode passthrough >/tmp/npmgr-tcp-no-stream.out 2>&1; then
+    fail "expected add-tcp to fail when stream module is unavailable"
+  fi
+  assert_contains "$(cat /tmp/npmgr-tcp-no-stream.out)" "stream 模块"
+  assert_contains "$(cat /tmp/npmgr-tcp-no-stream.out)" "libnginx-mod-stream"
+  assert_not_exists "$NPMGR_BASE_DIR/rules/tcp-no-stream.conf"
   teardown_env
 }
 
@@ -511,13 +606,16 @@ test_interactive_menu_is_chinese() {
 main() {
   [[ -x "$SCRIPT_PATH" ]] || fail "script not found: $SCRIPT_PATH"
   test_install_creates_layout
+  test_install_does_not_break_http_without_stream_module
   test_install_bootstraps_acme_without_crontab
   test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config
   test_add_http_reports_cert_failure_and_keeps_rule
   test_auto_dns_creates_cloudflare_record
+  test_auto_dns_accepts_short_record_name
   test_auto_dns_failure_is_reported_and_rule_kept_disabled
   test_add_tcp_tls_generates_stream_config_and_cert_files
+  test_add_tcp_requires_stream_module
   test_invalid_port_is_rejected
   test_delete_removes_rule_and_configs
   test_list_and_show_display_rule_details
