@@ -27,7 +27,7 @@ assert_file_contains() {
   local path="$1"
   local needle="$2"
   [[ -f "$path" ]] || fail "expected file to exist: $path"
-  grep -F "$needle" "$path" >/dev/null || fail "expected $path to contain: $needle"
+  grep -F -- "$needle" "$path" >/dev/null || fail "expected $path to contain: $needle"
 }
 
 assert_not_exists() {
@@ -56,6 +56,7 @@ setup_env() {
   export NPMGR_BASE_DIR="$TMP_ROOT/etc/nginx-proxy-manager"
   export NPMGR_NGINX_ETC="$TMP_ROOT/etc/nginx"
   export NPMGR_ACME_HOME="$TMP_ROOT/acme"
+  export NPMGR_CF_CONFIG="$TMP_ROOT/etc/nginx-proxy-manager/cloudflare.conf"
   export NPMGR_SYSTEMCTL_BIN="$TMP_ROOT/bin/systemctl"
   export NPMGR_APT_GET_BIN="$TMP_ROOT/bin/apt-get"
   export CF_Token="test-token"
@@ -296,6 +297,88 @@ test_list_and_show_display_rule_details() {
   teardown_env
 }
 
+test_edit_and_enable_disable_work() {
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd add-http \
+    --name editme \
+    --listen 8082 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 9000 \
+    --https off >/dev/null
+  run_cmd edit editme --upstream-port 9001 >/tmp/npmgr-edit.out
+  assert_file_contains "$NPMGR_BASE_DIR/rules/editme.conf" "UPSTREAM_PORT=9001"
+  run_cmd disable editme >/tmp/npmgr-disable.out
+  assert_file_contains "$NPMGR_BASE_DIR/rules/editme.conf" "ENABLED=off"
+  assert_not_exists "$NPMGR_NGINX_ETC/sites-available/npmgr-editme.conf"
+  run_cmd enable editme >/tmp/npmgr-enable.out
+  assert_file_contains "$NPMGR_BASE_DIR/rules/editme.conf" "ENABLED=on"
+  assert_exists "$NPMGR_NGINX_ETC/sites-available/npmgr-editme.conf"
+  teardown_env
+}
+
+test_reload_renew_and_cf_check_work() {
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd reload >/tmp/npmgr-reload.out
+  run_cmd renew-certs >/tmp/npmgr-renew.out
+  run_cmd cf-dns-check >/tmp/npmgr-cfcheck.out
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/systemctl.log" "reload nginx"
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/acme.log" "--cron"
+  assert_contains "$(cat /tmp/npmgr-cfcheck.out)" "校验通过"
+  teardown_env
+}
+
+test_save_cloudflare_credentials_and_auto_load() {
+  setup_env
+  unset CF_Token
+  run_cmd install >/dev/null
+  run_cmd set-cf-credentials --token saved-token >/tmp/npmgr-cf-save.out
+  assert_file_contains "$NPMGR_CF_CONFIG" "CF_Token=saved-token"
+  local check_output
+  check_output="$(run_cmd cf-dns-check)"
+  assert_contains "$check_output" "校验通过"
+  teardown_env
+}
+
+test_save_cloudflare_credentials_with_special_chars() {
+  setup_env
+  unset CF_Token
+  run_cmd install >/dev/null
+  run_cmd set-cf-credentials --token 'token$with!special#chars' >/tmp/npmgr-cf-special.out
+  assert_file_contains "$NPMGR_CF_CONFIG" 'CF_Token='
+  local check_output
+  check_output="$(run_cmd cf-dns-check)"
+  assert_contains "$check_output" "校验通过"
+  teardown_env
+}
+
+test_help_and_version_are_available() {
+  setup_env
+  local help_output
+  local version_output
+  help_output="$(run_cmd --help)"
+  version_output="$(run_cmd version)"
+  assert_contains "$help_output" "用法"
+  assert_contains "$help_output" "add-http"
+  assert_contains "$version_output" "nginx-proxy-manager.sh"
+  teardown_env
+}
+
+test_user_facing_output_is_chinese() {
+  setup_env
+  local error_output
+  if run_cmd show >/tmp/npmgr-show-missing.out 2>&1; then
+    fail "expected show without rule name to fail"
+  fi
+  error_output="$(cat /tmp/npmgr-show-missing.out)"
+  assert_contains "$error_output" "查看单条规则详情 需要规则名"
+  assert_not_contains "$error_output" "[ERROR]"
+  assert_not_contains "$error_output" "[WARN]"
+  assert_not_contains "$error_output" "[INFO]"
+  teardown_env
+}
+
 test_interactive_menu_is_chinese() {
   setup_env
   local menu_output
@@ -303,6 +386,7 @@ test_interactive_menu_is_chinese() {
   assert_contains "$menu_output" "Nginx 代理管理"
   assert_contains "$menu_output" "安装依赖并初始化环境"
   assert_contains "$menu_output" "添加 HTTP/HTTPS 反向代理"
+  assert_contains "$menu_output" "设置 Cloudflare 凭证"
   assert_contains "$menu_output" "退出"
   assert_not_contains "$menu_output" "add-http"
   teardown_env
@@ -318,6 +402,12 @@ main() {
   test_invalid_port_is_rejected
   test_delete_removes_rule_and_configs
   test_list_and_show_display_rule_details
+  test_edit_and_enable_disable_work
+  test_reload_renew_and_cf_check_work
+  test_save_cloudflare_credentials_and_auto_load
+  test_save_cloudflare_credentials_with_special_chars
+  test_help_and_version_are_available
+  test_user_facing_output_is_chinese
   test_interactive_menu_is_chinese
   echo "All tests passed"
 }

@@ -15,20 +15,21 @@ SITES_ENABLED_DIR="$NPMGR_NGINX_ETC/sites-enabled"
 STREAMS_AVAILABLE_DIR="$NPMGR_NGINX_ETC/streams-available"
 STREAMS_ENABLED_DIR="$NPMGR_NGINX_ETC/streams-enabled"
 NPMGR_ACME_HOME="${NPMGR_ACME_HOME:-$HOME/.acme.sh}"
+NPMGR_CF_CONFIG="${NPMGR_CF_CONFIG:-$BASE_DIR/cloudflare.conf}"
 NPMGR_SYSTEMCTL_BIN="${NPMGR_SYSTEMCTL_BIN:-systemctl}"
 NPMGR_APT_GET_BIN="${NPMGR_APT_GET_BIN:-apt-get}"
 NPMGR_TEST_MODE="${NPMGR_TEST_MODE:-0}"
 
 log() {
-  printf '[INFO] %s\n' "$*"
+  printf '提示：%s\n' "$*"
 }
 
 warn() {
-  printf '[WARN] %s\n' "$*" >&2
+  printf '警告：%s\n' "$*" >&2
 }
 
 die() {
-  printf '[ERROR] %s\n' "$*" >&2
+  printf '错误：%s\n' "$*" >&2
   exit 1
 }
 
@@ -59,6 +60,13 @@ write_file() {
   parent="$(dirname "$path")"
   mkdir -p "$parent"
   printf '%s' "$content" >"$path"
+}
+
+load_cloudflare_credentials() {
+  if [[ -f "$NPMGR_CF_CONFIG" ]]; then
+    # shellcheck disable=SC1090
+    source "$NPMGR_CF_CONFIG"
+  fi
 }
 
 safe_symlink() {
@@ -132,9 +140,9 @@ validate_http_rule() {
   validate_port "$LISTEN_PORT"
   validate_upstream_host "$UPSTREAM_HOST"
   validate_port "$UPSTREAM_PORT"
-  [[ "$UPSTREAM_PROTO" == "http" || "$UPSTREAM_PROTO" == "https" ]] || die "UPSTREAM_PROTO 只能是 http 或 https"
-  [[ "$ENABLE_HTTPS" == "on" || "$ENABLE_HTTPS" == "off" ]] || die "ENABLE_HTTPS 只能是 on/off"
-  [[ "$AUTO_DNS" == "on" || "$AUTO_DNS" == "off" ]] || die "AUTO_DNS 只能是 on/off"
+  [[ "$UPSTREAM_PROTO" == "http" || "$UPSTREAM_PROTO" == "https" ]] || die "上游协议只能是 http 或 https。"
+  [[ "$ENABLE_HTTPS" == "on" || "$ENABLE_HTTPS" == "off" ]] || die "HTTPS 开关只能填写 on 或 off。"
+  [[ "$AUTO_DNS" == "on" || "$AUTO_DNS" == "off" ]] || die "自动 DNS 开关只能填写 on 或 off。"
   if [[ -n "${SERVER_NAME:-}" ]]; then
     is_valid_domain "$SERVER_NAME" || die "域名无效: $SERVER_NAME"
   fi
@@ -148,7 +156,7 @@ validate_tcp_rule() {
   validate_port "$LISTEN_PORT"
   validate_upstream_host "$UPSTREAM_HOST"
   validate_port "$UPSTREAM_PORT"
-  [[ "$TLS_MODE" == "passthrough" || "$TLS_MODE" == "terminate" ]] || die "TLS_MODE 只能是 passthrough 或 terminate"
+  [[ "$TLS_MODE" == "passthrough" || "$TLS_MODE" == "terminate" ]] || die "TLS 模式只能是 passthrough 或 terminate。"
   if [[ "$TLS_MODE" == "terminate" ]]; then
     [[ -n "${SERVER_NAME:-}" ]] || die "TCP TLS 终止模式必须提供域名。"
     is_valid_domain "$SERVER_NAME" || die "域名无效: $SERVER_NAME"
@@ -383,6 +391,7 @@ cf_api() {
   local method="$1"
   local endpoint="$2"
   local data="${3:-}"
+  load_cloudflare_credentials
   [[ -n "${CF_Token:-}" ]] || die "缺少 Cloudflare Token，请设置 CF_Token。"
   local url="https://api.cloudflare.com/client/v4${endpoint}"
   if [[ -n "$data" ]]; then
@@ -417,7 +426,7 @@ sync_dns_record() {
   local zone_response zone_id dns_name ip_address lookup_response record_id payload
   zone_response="$(cf_api GET "/zones?name=${CF_ZONE}")"
   zone_id="$(printf '%s' "$zone_response" | jq '.result[0].id // empty')"
-  [[ -n "$zone_id" ]] || die "找不到 Cloudflare Zone: $CF_ZONE"
+  [[ -n "$zone_id" ]] || die "找不到 Cloudflare 域名区域：$CF_ZONE"
   dns_name="$CF_RECORD_NAME"
   ip_address="${PUBLIC_IP_OVERRIDE:-$(curl -sS https://api.ipify.org)}"
   lookup_response="$(cf_api GET "/zones/${zone_id}/dns_records?type=A&name=${dns_name}")"
@@ -437,6 +446,7 @@ issue_certificate() {
   local domain="$1"
   local acme_cmd
   acme_cmd="$(get_acme_cmd)"
+  load_cloudflare_credentials
   [[ -n "${CF_Token:-}" ]] || die "申请证书前请设置 CF_Token。"
   ensure_directory "$CERTS_DIR/$domain"
   CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --issue --dns dns_cf -d "$domain" >/dev/null
@@ -476,6 +486,20 @@ port_conflict_check() {
   local requested_port="$1"
   local ignored_rule="${2:-}"
   local path existing_port existing_rule
+  local saved_rule_name="${RULE_NAME-}"
+  local saved_rule_type="${RULE_TYPE-}"
+  local saved_server_name="${SERVER_NAME-}"
+  local saved_listen_port="${LISTEN_PORT-}"
+  local saved_upstream_host="${UPSTREAM_HOST-}"
+  local saved_upstream_port="${UPSTREAM_PORT-}"
+  local saved_upstream_proto="${UPSTREAM_PROTO-}"
+  local saved_enable_https="${ENABLE_HTTPS-}"
+  local saved_auto_dns="${AUTO_DNS-}"
+  local saved_cf_zone="${CF_ZONE-}"
+  local saved_cf_record_name="${CF_RECORD_NAME-}"
+  local saved_cert_mode="${CERT_MODE-}"
+  local saved_enabled="${ENABLED-}"
+  local saved_tls_mode="${TLS_MODE-}"
   shopt -s nullglob
   for path in "$RULES_DIR"/*.conf; do
     unset RULE_NAME RULE_TYPE SERVER_NAME LISTEN_PORT UPSTREAM_HOST UPSTREAM_PORT UPSTREAM_PROTO ENABLE_HTTPS AUTO_DNS CF_ZONE CF_RECORD_NAME CERT_MODE ENABLED TLS_MODE
@@ -488,6 +512,20 @@ port_conflict_check() {
     fi
   done
   shopt -u nullglob
+  RULE_NAME="$saved_rule_name"
+  RULE_TYPE="$saved_rule_type"
+  SERVER_NAME="$saved_server_name"
+  LISTEN_PORT="$saved_listen_port"
+  UPSTREAM_HOST="$saved_upstream_host"
+  UPSTREAM_PORT="$saved_upstream_port"
+  UPSTREAM_PROTO="$saved_upstream_proto"
+  ENABLE_HTTPS="$saved_enable_https"
+  AUTO_DNS="$saved_auto_dns"
+  CF_ZONE="$saved_cf_zone"
+  CF_RECORD_NAME="$saved_cf_record_name"
+  CERT_MODE="$saved_cert_mode"
+  ENABLED="$saved_enabled"
+  TLS_MODE="$saved_tls_mode"
 }
 
 apply_http_side_effects() {
@@ -558,7 +596,7 @@ list_rules() {
     # shellcheck disable=SC1090
     source "$path"
     printf '%s\t%s\t%s\t%s\t%s\n' \
-      "${RULE_NAME:-unknown}" "${RULE_TYPE:-unknown}" "${LISTEN_PORT:-0}" "${ENABLED:-on}" "${SERVER_NAME:-}"
+      "${RULE_NAME:-未知}" "${RULE_TYPE:-未知}" "${LISTEN_PORT:-0}" "${ENABLED:-on}" "${SERVER_NAME:-}"
   done
   shopt -u nullglob
   if [[ $count -eq 0 ]]; then
@@ -594,7 +632,11 @@ set_rule_enabled_state() {
   mv "${path}.tmp" "$path"
   render_rule_from_file "$rule_name"
   reload_nginx
-  log "规则 ${rule_name} 已${desired_state/on/启用}"
+  if [[ "$desired_state" == "on" ]]; then
+    log "规则 ${rule_name} 已启用。"
+  else
+    log "规则 ${rule_name} 已禁用。"
+  fi
 }
 
 edit_rule() {
@@ -602,6 +644,7 @@ edit_rule() {
   shift || true
   load_rule "$rule_name"
   if [[ "$RULE_TYPE" == "http" ]]; then
+    load_existing_http_defaults
     RULE_NAME="$rule_name"
     parse_http_args "$@"
     validate_http_rule
@@ -609,6 +652,7 @@ edit_rule() {
     apply_http_side_effects
     save_http_rule
   else
+    load_existing_tcp_defaults
     RULE_NAME="$rule_name"
     parse_tcp_args "$@"
     validate_tcp_rule
@@ -627,6 +671,17 @@ renew_certs() {
   "$acme_cmd" --home "$NPMGR_ACME_HOME" --cron >/dev/null
   reload_nginx
   log "证书续期任务已执行。"
+}
+
+save_cloudflare_credentials() {
+  local token="${1:-}"
+  [[ -n "$token" ]] || die "Cloudflare Token 不能为空。"
+  local quoted_token
+  printf -v quoted_token '%q' "$token"
+  write_file "$NPMGR_CF_CONFIG" "CF_Token=${quoted_token}
+"
+  chmod 600 "$NPMGR_CF_CONFIG" 2>/dev/null || true
+  log "Cloudflare 凭证已保存。"
 }
 
 parse_http_args() {
@@ -669,6 +724,7 @@ usage() {
   cat <<EOF
 用法:
   $SCRIPT_NAME install
+  $SCRIPT_NAME set-cf-credentials --token <token>
   $SCRIPT_NAME add-http [参数]
   $SCRIPT_NAME add-tcp [参数]
   $SCRIPT_NAME list
@@ -683,6 +739,7 @@ usage() {
   $SCRIPT_NAME version
 
 示例:
+  $SCRIPT_NAME set-cf-credentials --token xxxxxx
   $SCRIPT_NAME add-http --name blog --domain blog.example.com --listen 443 --upstream-host 127.0.0.1 --upstream-port 3000 --https on
   $SCRIPT_NAME add-tcp --name ssh-tls --listen 9443 --upstream-host 127.0.0.1 --upstream-port 22 --tls-mode terminate --domain ssh.example.com
 EOF
@@ -704,6 +761,7 @@ prompt() {
 command_label() {
   case "$1" in
     install) printf '安装依赖并初始化环境' ;;
+    set-cf-credentials) printf '设置 Cloudflare 凭证' ;;
     add-http) printf '添加 HTTP/HTTPS 反向代理' ;;
     add-tcp) printf '添加 TCP 转发规则' ;;
     list) printf '查看规则列表' ;;
@@ -721,20 +779,46 @@ command_label() {
   esac
 }
 
+load_existing_http_defaults() {
+  RULE_NAME="${RULE_NAME:-}"
+  SERVER_NAME="${SERVER_NAME:-}"
+  LISTEN_PORT="${LISTEN_PORT:-443}"
+  UPSTREAM_HOST="${UPSTREAM_HOST:-127.0.0.1}"
+  UPSTREAM_PORT="${UPSTREAM_PORT:-}"
+  UPSTREAM_PROTO="${UPSTREAM_PROTO:-http}"
+  ENABLE_HTTPS="${ENABLE_HTTPS:-on}"
+  AUTO_DNS="${AUTO_DNS:-off}"
+  CF_ZONE="${CF_ZONE:-}"
+  CF_RECORD_NAME="${CF_RECORD_NAME:-}"
+  CERT_MODE="${CERT_MODE:-dns_cf}"
+  ENABLED="${ENABLED:-on}"
+}
+
+load_existing_tcp_defaults() {
+  RULE_NAME="${RULE_NAME:-}"
+  LISTEN_PORT="${LISTEN_PORT:-}"
+  UPSTREAM_HOST="${UPSTREAM_HOST:-127.0.0.1}"
+  UPSTREAM_PORT="${UPSTREAM_PORT:-}"
+  TLS_MODE="${TLS_MODE:-passthrough}"
+  SERVER_NAME="${SERVER_NAME:-}"
+  CERT_MODE="${CERT_MODE:-dns_cf}"
+  ENABLED="${ENABLED:-on}"
+}
+
 interactive_add_http() {
   local name domain listen upstream_host upstream_port https auto_dns cf_zone cf_record upstream_proto
   name="$(prompt '规则名')"
-  domain="$(prompt '域名(可留空)' '')"
+  domain="$(prompt '域名（可留空）' '')"
   listen="$(prompt '监听端口' '443')"
   upstream_host="$(prompt '上游地址' '127.0.0.1')"
   upstream_port="$(prompt '上游端口')"
-  upstream_proto="$(prompt '上游协议(http/https)' 'http')"
-  https="$(prompt '启用 HTTPS(on/off)' 'on')"
-  auto_dns="$(prompt '自动管理 DNS(on/off)' 'off')"
+  upstream_proto="$(prompt '上游协议（http/https）' 'http')"
+  https="$(prompt '启用 HTTPS（on/off）' 'on')"
+  auto_dns="$(prompt '自动管理 DNS（on/off）' 'off')"
   cf_zone=''
   cf_record=''
   if [[ "$auto_dns" == "on" ]]; then
-    cf_zone="$(prompt 'Cloudflare Zone')"
+    cf_zone="$(prompt 'Cloudflare 域名区域（Zone）')"
     cf_record="$(prompt 'DNS 记录名' "$domain")"
   fi
   add_http_rule --name "$name" --domain "$domain" --listen "$listen" --upstream-host "$upstream_host" --upstream-port "$upstream_port" --upstream-proto "$upstream_proto" --https "$https" --auto-dns "$auto_dns" --cf-zone "$cf_zone" --cf-record-name "$cf_record"
@@ -746,7 +830,7 @@ interactive_add_tcp() {
   listen="$(prompt '监听端口')"
   upstream_host="$(prompt '上游地址' '127.0.0.1')"
   upstream_port="$(prompt '上游端口')"
-  tls_mode="$(prompt 'TLS 模式(passthrough/terminate)' 'passthrough')"
+  tls_mode="$(prompt 'TLS 模式（passthrough/terminate）' 'passthrough')"
   domain=''
   if [[ "$tls_mode" == "terminate" ]]; then
     domain="$(prompt '证书域名')"
@@ -754,48 +838,67 @@ interactive_add_tcp() {
   add_tcp_rule --name "$name" --listen "$listen" --upstream-host "$upstream_host" --upstream-port "$upstream_port" --tls-mode "$tls_mode" --domain "$domain"
 }
 
+interactive_set_cloudflare_credentials() {
+  local token
+  token="$(prompt '请输入 Cloudflare API Token')"
+  save_cloudflare_credentials "$token"
+}
+
 interactive_menu() {
   while true; do
     cat <<'EOF'
 ======== Nginx 代理管理 ========
 1) 安装依赖并初始化环境
-2) 添加 HTTP/HTTPS 反向代理
-3) 添加 TCP 转发规则
-4) 查看规则列表
-5) 查看单条规则详情
-6) 修改已有规则
-7) 删除规则
-8) 启用规则
-9) 禁用规则
-10) 重新加载 Nginx
-11) 执行证书续期
-12) 检查 Cloudflare 凭据
+2) 设置 Cloudflare 凭证
+3) 添加 HTTP/HTTPS 反向代理
+4) 添加 TCP 转发规则
+5) 查看规则列表
+6) 查看单条规则详情
+7) 修改已有规则
+8) 删除规则
+9) 启用规则
+10) 禁用规则
+11) 重新加载 Nginx
+12) 执行证书续期
+13) 检查 Cloudflare 凭据
 0) 退出
 EOF
     local choice
     choice="$(prompt '请选择操作' '0')"
     case "$choice" in
       1) run_install ;;
-      2) interactive_add_http ;;
-      3) interactive_add_tcp ;;
-      4) list_rules ;;
-      5) show_rule "$(prompt '规则名')" ;;
-      6)
+      2) interactive_set_cloudflare_credentials ;;
+      3) interactive_add_http ;;
+      4) interactive_add_tcp ;;
+      5) list_rules ;;
+      6) show_rule "$(prompt '规则名')" ;;
+      7)
         local rule_name
         rule_name="$(prompt '规则名')"
         warn "修改规则的交互式逐字段向导暂未完成，请先使用命令行方式。"
         show_rule "$rule_name"
         ;;
-      7) delete_rule "$(prompt '规则名')" ;;
-      8) set_rule_enabled_state "$(prompt '规则名')" "on" ;;
-      9) set_rule_enabled_state "$(prompt '规则名')" "off" ;;
-      10) reload_nginx ;;
-      11) renew_certs ;;
-      12) cf_dns_check ;;
+      8) delete_rule "$(prompt '规则名')" ;;
+      9) set_rule_enabled_state "$(prompt '规则名')" "on" ;;
+      10) set_rule_enabled_state "$(prompt '规则名')" "off" ;;
+      11) reload_nginx ;;
+      12) renew_certs ;;
+      13) cf_dns_check ;;
       0) break ;;
       *) warn "无效选择。" ;;
     esac
   done
+}
+
+parse_cf_credentials_args() {
+  local token=''
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --token) token="$2"; shift 2 ;;
+      *) die "未知 Cloudflare 凭证参数: $1" ;;
+    esac
+  done
+  save_cloudflare_credentials "$token"
 }
 
 run_install() {
@@ -826,6 +929,11 @@ main() {
 
   case "$command" in
     install) run_install "$@" ;;
+    set-cf-credentials)
+      require_root
+      ensure_layout
+      parse_cf_credentials_args "$@"
+      ;;
     add-http)
       require_root
       assert_runtime_dependencies

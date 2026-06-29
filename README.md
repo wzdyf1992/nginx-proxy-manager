@@ -69,6 +69,18 @@ sudo ./nginx-proxy-manager.sh install
 export CF_Token="你的 Cloudflare API Token"
 ```
 
+现在也支持直接用脚本保存凭据到本地配置文件：
+
+```bash
+sudo ./nginx-proxy-manager.sh set-cf-credentials --token "你的 Cloudflare API Token"
+```
+
+保存位置默认是：
+
+```bash
+/etc/nginx-proxy-manager/cloudflare.conf
+```
+
 建议 Token 至少有：
 
 - `Zone:DNS:Edit`
@@ -95,6 +107,7 @@ sudo ./nginx-proxy-manager.sh
 ```
 
 菜单界面和提示信息现在默认全部为中文。
+菜单中也已经包含“设置 Cloudflare 凭证”入口。
 
 ### 1）添加 HTTP/HTTPS 反代
 
