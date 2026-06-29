@@ -124,6 +124,32 @@ echo "Pre-check failed, cannot install." >&2
 exit 1
 EOS
 else
+  mkdir -p "${NPMGR_BASE_DIR}/runtime"
+  echo "$*" >>"${NPMGR_BASE_DIR}/runtime/curl.log"
+  if [[ "$*" == *"api.ipify.org"* ]]; then
+    echo "${MOCK_PUBLIC_IP:-203.0.113.10}"
+    exit 0
+  fi
+  if [[ "$*" == *"/user/tokens/verify"* ]]; then
+    echo '{"success":true,"result":{"status":"active"}}'
+    exit 0
+  fi
+  if [[ "$*" == *"/zones?name=example.com"* ]]; then
+    echo '{"success":true,"result":[{"id":"zone123","name":"example.com"}]}'
+    exit 0
+  fi
+  if [[ "$*" == *"/dns_records?type=A&name=dns.example.com"* ]]; then
+    echo '{"success":true,"result":[]}'
+    exit 0
+  fi
+  if [[ "$*" == *"/zones/zone123/dns_records"* ]]; then
+    if [[ "${MOCK_CF_DNS_WRITE_FAIL:-0}" == "1" ]]; then
+      echo '{"success":false,"errors":[{"message":"missing permission"}]}'
+    else
+      echo '{"success":true,"result":{"id":"record123"}}'
+    fi
+    exit 0
+  fi
   echo "${MOCK_CURL_RESPONSE:-{\"success\":true,\"result\":[]}}"
 fi
 EOF
@@ -140,6 +166,9 @@ elif expr == '.result[0].id // empty':
 elif expr == '.result[0].content // empty':
     result = data.get('result') or []
     print(result[0].get('content', '') if result else '')
+elif expr == '.errors[0].message // empty':
+    errors = data.get('errors') or []
+    print(errors[0].get('message', '') if errors else '')
 else:
     raise SystemExit(1)
 EOF
@@ -273,6 +302,45 @@ test_add_http_reports_cert_failure_and_keeps_rule() {
   assert_contains "$(cat /tmp/npmgr-cert-fail.out)" "证书"
   assert_contains "$(cat /tmp/npmgr-cert-fail.out)" "acme.sh.log"
   assert_exists "$NPMGR_BASE_DIR/runtime/acme.sh.log"
+  teardown_env
+}
+
+test_auto_dns_creates_cloudflare_record() {
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd add-http \
+    --name dnsapp \
+    --domain dns.example.com \
+    --listen 444 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off \
+    --auto-dns on \
+    --cf-zone example.com \
+    --cf-record-name dns.example.com >/tmp/npmgr-dns-create.out
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/curl.log" "-X POST"
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/curl.log" "/zones/zone123/dns_records"
+  teardown_env
+}
+
+test_auto_dns_failure_is_reported_and_rule_kept_disabled() {
+  setup_env
+  export MOCK_CF_DNS_WRITE_FAIL=1
+  run_cmd install >/dev/null
+  if run_cmd add-http \
+    --name dnsfail \
+    --domain dns.example.com \
+    --listen 445 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off \
+    --auto-dns on \
+    --cf-zone example.com \
+    --cf-record-name dns.example.com >/tmp/npmgr-dns-fail.out 2>&1; then
+    fail "expected add-http to fail when Cloudflare DNS write fails"
+  fi
+  assert_file_contains "$NPMGR_BASE_DIR/rules/dnsfail.conf" "ENABLED=off"
+  assert_contains "$(cat /tmp/npmgr-dns-fail.out)" "DNS"
   teardown_env
 }
 
@@ -445,6 +513,8 @@ main() {
   test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config
   test_add_http_reports_cert_failure_and_keeps_rule
+  test_auto_dns_creates_cloudflare_record
+  test_auto_dns_failure_is_reported_and_rule_kept_disabled
   test_add_tcp_tls_generates_stream_config_and_cert_files
   test_invalid_port_is_rejected
   test_delete_removes_rule_and_configs

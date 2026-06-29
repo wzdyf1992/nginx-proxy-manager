@@ -412,35 +412,59 @@ cf_dns_check() {
   local output
   output="$(cf_api GET "/user/tokens/verify")"
   if [[ "$(printf '%s' "$output" | jq '.success')" != "true" ]]; then
-    die "Cloudflare Token 校验失败。"
+    warn "Cloudflare Token 校验失败。"
+    return 1
   fi
   log "Cloudflare Token 校验通过。"
 }
 
+ensure_cf_success() {
+  local response="$1"
+  local action="$2"
+  local message
+  if [[ "$(printf '%s' "$response" | jq '.success')" != "true" ]]; then
+    message="$(printf '%s' "$response" | jq '.errors[0].message // empty')"
+    [[ -n "$message" ]] || message="Cloudflare 未返回具体错误"
+    warn "${action}失败：${message}"
+    return 1
+  fi
+}
+
 ensure_cf_zone() {
-  [[ -n "${CF_ZONE:-}" ]] || die "启用自动 DNS 时必须提供 CF_ZONE。"
+  if [[ -z "${CF_ZONE:-}" ]]; then
+    warn "启用自动 DNS 时必须提供 CF_ZONE。"
+    return 1
+  fi
   [[ -n "${CF_RECORD_NAME:-}" ]] || CF_RECORD_NAME="$SERVER_NAME"
 }
 
 sync_dns_record() {
-  ensure_cf_zone
-  cf_dns_check >/dev/null
+  ensure_cf_zone || return 1
+  cf_dns_check >/dev/null || return 1
   local zone_response zone_id dns_name ip_address lookup_response record_id payload
   zone_response="$(cf_api GET "/zones?name=${CF_ZONE}")"
+  ensure_cf_success "$zone_response" "查询 Cloudflare 域名区域" || return 1
   zone_id="$(printf '%s' "$zone_response" | jq '.result[0].id // empty')"
-  [[ -n "$zone_id" ]] || die "找不到 Cloudflare 域名区域：$CF_ZONE"
+  if [[ -z "$zone_id" ]]; then
+    warn "找不到 Cloudflare 域名区域：$CF_ZONE"
+    return 1
+  fi
   dns_name="$CF_RECORD_NAME"
   ip_address="${PUBLIC_IP_OVERRIDE:-$(curl -sS https://api.ipify.org)}"
   lookup_response="$(cf_api GET "/zones/${zone_id}/dns_records?type=A&name=${dns_name}")"
+  ensure_cf_success "$lookup_response" "查询 Cloudflare DNS 记录" || return 1
   record_id="$(printf '%s' "$lookup_response" | jq '.result[0].id // empty')"
   payload=$(cat <<EOF
 {"type":"A","name":"${dns_name}","content":"${ip_address}","ttl":1,"proxied":false}
 EOF
 )
+  local write_response
   if [[ -n "$record_id" ]]; then
-    cf_api PUT "/zones/${zone_id}/dns_records/${record_id}" "$payload" >/dev/null
+    write_response="$(cf_api PUT "/zones/${zone_id}/dns_records/${record_id}" "$payload")"
+    ensure_cf_success "$write_response" "更新 Cloudflare DNS 记录" || return 1
   else
-    cf_api POST "/zones/${zone_id}/dns_records" "$payload" >/dev/null
+    write_response="$(cf_api POST "/zones/${zone_id}/dns_records" "$payload")"
+    ensure_cf_success "$write_response" "创建 Cloudflare DNS 记录" || return 1
   fi
 }
 
@@ -543,10 +567,10 @@ port_conflict_check() {
 
 apply_http_side_effects() {
   if [[ "$AUTO_DNS" == "on" ]]; then
-    sync_dns_record
+    sync_dns_record || return 1
   fi
   if [[ "$ENABLE_HTTPS" == "on" ]]; then
-    issue_certificate "$SERVER_NAME"
+    issue_certificate "$SERVER_NAME" || return 1
   fi
 }
 
@@ -568,7 +592,7 @@ handle_rule_apply_failure() {
 
 apply_tcp_side_effects() {
   if [[ "$TLS_MODE" == "terminate" ]]; then
-    issue_certificate "$SERVER_NAME"
+    issue_certificate "$SERVER_NAME" || return 1
   fi
 }
 
@@ -590,14 +614,15 @@ add_http_rule() {
   validate_http_rule
   port_conflict_check "$LISTEN_PORT"
   save_http_rule
+  local current_rule_name="$RULE_NAME"
   if ! run_and_capture_failure apply_http_side_effects; then
-    handle_rule_apply_failure "$RULE_NAME" "DNS 或证书申请失败"
+    handle_rule_apply_failure "$current_rule_name" "DNS 或证书申请失败"
   fi
   if ! run_and_capture_failure render_http_rule; then
-    handle_rule_apply_failure "$RULE_NAME" "Nginx 配置生成失败"
+    handle_rule_apply_failure "$current_rule_name" "Nginx 配置生成失败"
   fi
   reload_nginx
-  log "HTTP 规则已创建: $RULE_NAME"
+  log "HTTP 规则已创建: $current_rule_name"
 }
 
 add_tcp_rule() {
@@ -614,14 +639,15 @@ add_tcp_rule() {
   validate_tcp_rule
   port_conflict_check "$LISTEN_PORT"
   save_tcp_rule
+  local current_rule_name="$RULE_NAME"
   if ! run_and_capture_failure apply_tcp_side_effects; then
-    handle_rule_apply_failure "$RULE_NAME" "证书申请失败"
+    handle_rule_apply_failure "$current_rule_name" "证书申请失败"
   fi
   if ! run_and_capture_failure render_tcp_rule; then
-    handle_rule_apply_failure "$RULE_NAME" "Nginx 配置生成失败"
+    handle_rule_apply_failure "$current_rule_name" "Nginx 配置生成失败"
   fi
   reload_nginx
-  log "TCP 规则已创建: $RULE_NAME"
+  log "TCP 规则已创建: $current_rule_name"
 }
 
 list_rules() {
