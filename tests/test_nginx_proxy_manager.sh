@@ -147,26 +147,44 @@ EOF
     cat >"$TMP_ROOT/bin/acme.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-echo "$*" >>"${NPMGR_BASE_DIR}/runtime/acme.log"
-if [[ "${NPMGR_ACME_ISSUE_FAIL:-0}" == "1" && "$*" == *"--issue"* ]]; then
+original_args="$*"
+echo "$original_args" >>"${NPMGR_BASE_DIR}/runtime/acme.log"
+log_file=''
+args=("$@")
+index=0
+while [[ $index -lt ${#args[@]} ]]; do
+  case "${args[$index]}" in
+    --log)
+      index=$((index + 1))
+      log_file="${args[$index]:-}"
+      ;;
+  esac
+  index=$((index + 1))
+done
+if [[ "${NPMGR_ACME_ISSUE_FAIL:-0}" == "1" && "$original_args" == *"--issue"* ]]; then
+  if [[ -n "$log_file" ]]; then
+    mkdir -p "$(dirname "$log_file")"
+    printf 'mock acme issue failed\n' >>"$log_file"
+  fi
   echo "[mock acme] issue failed" >&2
   exit 1
 fi
-if [[ "$*" == *"--install-cert"* ]]; then
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
+if [[ "$original_args" == *"--install-cert"* ]]; then
+  index=0
+  while [[ $index -lt ${#args[@]} ]]; do
+    case "${args[$index]}" in
       --fullchain-file)
-        shift
-        mkdir -p "$(dirname "$1")"
-        printf 'fullchain' >"$1"
+        index=$((index + 1))
+        mkdir -p "$(dirname "${args[$index]}")"
+        printf 'fullchain' >"${args[$index]}"
         ;;
       --key-file)
-        shift
-        mkdir -p "$(dirname "$1")"
-        printf 'privkey' >"$1"
+        index=$((index + 1))
+        mkdir -p "$(dirname "${args[$index]}")"
+        printf 'privkey' >"${args[$index]}"
         ;;
     esac
-    shift || true
+    index=$((index + 1))
   done
 fi
 EOF
@@ -252,6 +270,8 @@ test_add_http_reports_cert_failure_and_keeps_rule() {
   assert_file_contains "$NPMGR_BASE_DIR/rules/broken-cert.conf" "RULE_NAME=broken-cert"
   assert_file_contains "$NPMGR_BASE_DIR/rules/broken-cert.conf" "ENABLED=off"
   assert_contains "$(cat /tmp/npmgr-cert-fail.out)" "证书"
+  assert_contains "$(cat /tmp/npmgr-cert-fail.out)" "acme.sh.log"
+  assert_exists "$NPMGR_BASE_DIR/runtime/acme.sh.log"
   teardown_env
 }
 

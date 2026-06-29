@@ -19,6 +19,7 @@ NPMGR_CF_CONFIG="${NPMGR_CF_CONFIG:-$BASE_DIR/cloudflare.conf}"
 NPMGR_SYSTEMCTL_BIN="${NPMGR_SYSTEMCTL_BIN:-systemctl}"
 NPMGR_APT_GET_BIN="${NPMGR_APT_GET_BIN:-apt-get}"
 NPMGR_TEST_MODE="${NPMGR_TEST_MODE:-0}"
+ACME_LOG_FILE="$RUNTIME_DIR/acme.sh.log"
 
 log() {
   printf '提示：%s\n' "$*"
@@ -449,10 +450,13 @@ issue_certificate() {
   load_cloudflare_credentials
   [[ -n "${CF_Token:-}" ]] || die "申请证书前请设置 CF_Token。"
   ensure_directory "$CERTS_DIR/$domain"
-  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --issue --dns dns_cf -d "$domain" >/dev/null || return 1
+  ensure_directory "$RUNTIME_DIR"
+  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --issue --dns dns_cf -d "$domain" \
+    --debug 2 --log "$ACME_LOG_FILE" >/dev/null || return 1
   CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --install-cert -d "$domain" \
     --fullchain-file "$CERTS_DIR/$domain/fullchain.pem" \
-    --key-file "$CERTS_DIR/$domain/privkey.pem" >/dev/null || return 1
+    --key-file "$CERTS_DIR/$domain/privkey.pem" \
+    --debug 2 --log "$ACME_LOG_FILE" >/dev/null || return 1
 }
 
 render_rule_from_file() {
@@ -558,7 +562,7 @@ handle_rule_apply_failure() {
   local reason="$2"
   disable_rule_file "$rule_name"
   remove_rendered_rule "$rule_name"
-  die "规则已保存，但后续应用失败：${reason}。该规则已被自动禁用，请修正后用 edit 或 enable 重试。"
+  die "规则已保存，但后续应用失败：${reason}。该规则已被自动禁用，请修正后用 edit 或 enable 重试。acme 调试日志：${ACME_LOG_FILE}"
 }
 
 apply_tcp_side_effects() {
