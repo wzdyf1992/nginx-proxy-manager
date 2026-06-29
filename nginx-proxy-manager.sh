@@ -19,6 +19,7 @@ NPMGR_CF_CONFIG="${NPMGR_CF_CONFIG:-$BASE_DIR/cloudflare.conf}"
 NPMGR_SYSTEMCTL_BIN="${NPMGR_SYSTEMCTL_BIN:-systemctl}"
 NPMGR_APT_GET_BIN="${NPMGR_APT_GET_BIN:-apt-get}"
 NPMGR_TEST_MODE="${NPMGR_TEST_MODE:-0}"
+NPMGR_ACME_SERVER="${NPMGR_ACME_SERVER:-letsencrypt}"
 ACME_LOG_FILE="$RUNTIME_DIR/acme.sh.log"
 
 log() {
@@ -451,9 +452,9 @@ issue_certificate() {
   [[ -n "${CF_Token:-}" ]] || die "申请证书前请设置 CF_Token。"
   ensure_directory "$CERTS_DIR/$domain"
   ensure_directory "$RUNTIME_DIR"
-  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --issue --dns dns_cf -d "$domain" \
+  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --server "$NPMGR_ACME_SERVER" --issue --dns dns_cf -d "$domain" \
     --debug 2 --log "$ACME_LOG_FILE" >/dev/null || return 1
-  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --install-cert -d "$domain" \
+  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --server "$NPMGR_ACME_SERVER" --install-cert -d "$domain" \
     --fullchain-file "$CERTS_DIR/$domain/fullchain.pem" \
     --key-file "$CERTS_DIR/$domain/privkey.pem" \
     --debug 2 --log "$ACME_LOG_FILE" >/dev/null || return 1

@@ -249,6 +249,7 @@ test_add_http_generates_rule_and_nginx_config() {
   assert_file_contains "$NPMGR_BASE_DIR/rules/blog.conf" "RULE_TYPE=http"
   assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf" "server_name blog.example.com;"
   assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf" "proxy_pass http://127.0.0.1:3000;"
+  assert_file_contains "$NPMGR_BASE_DIR/runtime/acme.log" "--server letsencrypt"
   assert_symlink_target "$NPMGR_NGINX_ETC/sites-enabled/npmgr-blog.conf" "$NPMGR_NGINX_ETC/sites-available/npmgr-blog.conf"
   assert_file_contains "$NPMGR_BASE_DIR/runtime/systemctl.log" "reload nginx"
   teardown_env

@@ -109,6 +109,8 @@ sudo ./nginx-proxy-manager.sh
 菜单界面和提示信息现在默认全部为中文。
 菜单中也已经包含“设置 Cloudflare 凭证”入口。
 
+证书签发默认使用 `Let's Encrypt`，避免 `acme.sh` 默认 `ZeroSSL` 时要求先注册邮箱的问题。如需覆盖，可设置环境变量 `NPMGR_ACME_SERVER`。
+
 ### 1）添加 HTTP/HTTPS 反代
 
 ```bash
