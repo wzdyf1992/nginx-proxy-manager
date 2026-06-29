@@ -368,6 +368,55 @@ test_add_http_generates_rule_and_nginx_config() {
   teardown_env
 }
 
+test_http_domain_rules_can_share_https_port() {
+  setup_env
+  run_cmd install >/dev/null
+  export NPMGR_ACME_ISSUE_SKIP=1
+  run_cmd add-http \
+    --name lucky \
+    --domain lucky.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 16601 \
+    --https on \
+    --auto-dns off >/tmp/npmgr-lucky.out
+  run_cmd add-http \
+    --name melonnet \
+    --domain melonnet.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 80 \
+    --https on \
+    --auto-dns off >/tmp/npmgr-melonnet.out
+  assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-lucky.conf" "server_name lucky.example.com;"
+  assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-melonnet.conf" "server_name melonnet.example.com;"
+  unset NPMGR_ACME_ISSUE_SKIP
+  teardown_env
+}
+
+test_http_same_domain_same_port_is_rejected() {
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd add-http \
+    --name app1 \
+    --domain same.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https off >/dev/null
+  if run_cmd add-http \
+    --name app2 \
+    --domain same.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3001 \
+    --https off >/tmp/npmgr-same-domain.out 2>&1; then
+    fail "expected same HTTP domain and port to be rejected"
+  fi
+  assert_contains "$(cat /tmp/npmgr-same-domain.out)" "监听端口冲突"
+  teardown_env
+}
+
 test_add_http_reports_cert_failure_and_keeps_rule() {
   setup_env 1 1
   run_cmd install >/dev/null
@@ -666,6 +715,8 @@ main() {
   test_install_bootstraps_acme_without_crontab
   test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config
+  test_http_domain_rules_can_share_https_port
+  test_http_same_domain_same_port_is_rejected
   test_add_http_reports_cert_failure_and_keeps_rule
   test_add_http_reuses_existing_certificate_when_acme_skips_issue
   test_auto_dns_creates_cloudflare_record

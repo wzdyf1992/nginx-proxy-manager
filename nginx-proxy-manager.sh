@@ -631,7 +631,9 @@ run_and_capture_failure() {
 port_conflict_check() {
   local requested_port="$1"
   local ignored_rule="${2:-}"
-  local path existing_port existing_rule
+  local requested_rule_type="${3:-${RULE_TYPE:-}}"
+  local requested_server_name="${4:-${SERVER_NAME:-}}"
+  local path existing_port existing_rule existing_type existing_server_name
   local saved_rule_name="${RULE_NAME-}"
   local saved_rule_type="${RULE_TYPE-}"
   local saved_server_name="${SERVER_NAME-}"
@@ -653,9 +655,21 @@ port_conflict_check() {
     source "$path"
     existing_rule="${RULE_NAME:-}"
     existing_port="${LISTEN_PORT:-}"
-    if [[ "$existing_rule" != "$ignored_rule" && "${ENABLED:-on}" == "on" && "$existing_port" == "$requested_port" ]]; then
+    existing_type="${RULE_TYPE:-}"
+    existing_server_name="${SERVER_NAME:-}"
+    if [[ "$existing_rule" == "$ignored_rule" || "${ENABLED:-on}" != "on" || "$existing_port" != "$requested_port" ]]; then
+      continue
+    fi
+    if [[ "$requested_rule_type" == "http" && "$existing_type" == "http" && -n "$requested_server_name" && -n "$existing_server_name" && "$requested_server_name" != "$existing_server_name" ]]; then
+      continue
+    fi
+    if [[ "$requested_rule_type" == "http" && "$existing_type" == "http" && -n "$requested_server_name" && -n "$existing_server_name" && "$requested_server_name" == "$existing_server_name" ]]; then
+      die "监听端口冲突: $requested_port 已被同域名规则 $existing_rule 使用。"
+    fi
+    if [[ "$requested_rule_type" == "http" && "$existing_type" == "http" ]]; then
       die "监听端口冲突: $requested_port 已被规则 $existing_rule 使用。"
     fi
+    die "监听端口冲突: $requested_port 已被规则 $existing_rule 使用。"
   done
   shopt -u nullglob
   RULE_NAME="$saved_rule_name"
@@ -725,7 +739,7 @@ add_http_rule() {
 
   parse_http_args "$@"
   validate_http_rule
-  port_conflict_check "$LISTEN_PORT"
+  port_conflict_check "$LISTEN_PORT" "" "http" "$SERVER_NAME"
   save_http_rule
   local current_rule_name="$RULE_NAME"
   if [[ "$AUTO_DNS" == "on" ]]; then
@@ -757,7 +771,7 @@ add_tcp_rule() {
 
   parse_tcp_args "$@"
   validate_tcp_rule
-  port_conflict_check "$LISTEN_PORT"
+  port_conflict_check "$LISTEN_PORT" "" "tcp" "$SERVER_NAME"
   ensure_stream_support
   save_tcp_rule
   local current_rule_name="$RULE_NAME"
@@ -832,7 +846,7 @@ edit_rule() {
     RULE_NAME="$rule_name"
     parse_http_args "$@"
     validate_http_rule
-    port_conflict_check "$LISTEN_PORT" "$rule_name"
+    port_conflict_check "$LISTEN_PORT" "$rule_name" "http" "$SERVER_NAME"
     save_http_rule
     if [[ "$AUTO_DNS" == "on" ]]; then
       if ! run_and_capture_failure sync_dns_record; then
@@ -849,7 +863,7 @@ edit_rule() {
     RULE_NAME="$rule_name"
     parse_tcp_args "$@"
     validate_tcp_rule
-    port_conflict_check "$LISTEN_PORT" "$rule_name"
+    port_conflict_check "$LISTEN_PORT" "$rule_name" "tcp" "$SERVER_NAME"
     save_tcp_rule
     if ! run_and_capture_failure apply_tcp_side_effects; then
       handle_rule_apply_failure "$RULE_NAME" "证书申请失败"
