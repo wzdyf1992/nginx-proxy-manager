@@ -233,6 +233,14 @@ while [[ $index -lt ${#args[@]} ]]; do
   esac
   index=$((index + 1))
 done
+if [[ "${NPMGR_ACME_ISSUE_SKIP:-0}" == "1" && "$original_args" == *"--issue"* ]]; then
+  if [[ -n "$log_file" ]]; then
+    mkdir -p "$(dirname "$log_file")"
+    printf 'Domains not changed.\nSkipping. Next renewal time is: 2026-08-28T02:52:58Z\nAdd --force to force renewal.\n' >>"$log_file"
+  fi
+  echo "[mock acme] skipping because cert is not due for renewal" >&2
+  exit 2
+fi
 if [[ "${NPMGR_ACME_ISSUE_FAIL:-0}" == "1" && "$original_args" == *"--issue"* ]]; then
   if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname "$log_file")"
@@ -266,6 +274,7 @@ EOF
     chmod +x "$TMP_ROOT/bin/acme.sh"
   fi
   export NPMGR_ACME_ISSUE_FAIL="$acme_issue_fail"
+  export NPMGR_ACME_ISSUE_SKIP="${NPMGR_ACME_ISSUE_SKIP:-0}"
   export PATH="$TMP_ROOT/bin:$PATH"
 }
 
@@ -362,6 +371,27 @@ test_add_http_reports_cert_failure_and_keeps_rule() {
   assert_contains "$(cat /tmp/npmgr-cert-fail.out)" "证书"
   assert_contains "$(cat /tmp/npmgr-cert-fail.out)" "acme.sh.log"
   assert_exists "$NPMGR_BASE_DIR/runtime/acme.sh.log"
+  teardown_env
+}
+
+test_add_http_reuses_existing_certificate_when_acme_skips_issue() {
+  export NPMGR_ACME_ISSUE_SKIP=1
+  setup_env
+  run_cmd install >/dev/null
+  run_cmd add-http \
+    --name existing-cert \
+    --domain existing.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https on \
+    --auto-dns off >/tmp/npmgr-existing-cert.out
+  assert_file_contains "$NPMGR_BASE_DIR/rules/existing-cert.conf" "ENABLED=on"
+  assert_file_contains "$NPMGR_NGINX_ETC/sites-available/npmgr-existing-cert.conf" "listen 443 ssl;"
+  assert_exists "$NPMGR_BASE_DIR/certs/existing.example.com/fullchain.pem"
+  assert_exists "$NPMGR_BASE_DIR/certs/existing.example.com/privkey.pem"
+  assert_contains "$(cat /tmp/npmgr-existing-cert.out)" "已有证书"
+  unset NPMGR_ACME_ISSUE_SKIP
   teardown_env
 }
 
@@ -611,6 +641,7 @@ main() {
   test_install_skips_unused_packages
   test_add_http_generates_rule_and_nginx_config
   test_add_http_reports_cert_failure_and_keeps_rule
+  test_add_http_reuses_existing_certificate_when_acme_skips_issue
   test_auto_dns_creates_cloudflare_record
   test_auto_dns_accepts_short_record_name
   test_auto_dns_failure_is_reported_and_rule_kept_disabled

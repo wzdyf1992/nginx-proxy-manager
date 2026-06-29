@@ -581,12 +581,18 @@ issue_certificate() {
   [[ -n "${CF_Token:-}" ]] || die "申请证书前请设置 CF_Token。"
   ensure_directory "$CERTS_DIR/$domain"
   ensure_directory "$RUNTIME_DIR"
-  CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --server "$NPMGR_ACME_SERVER" --issue --dns dns_cf -d "$domain" \
-    --debug 2 --log "$ACME_LOG_FILE" >/dev/null || return 1
+  if ! CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --server "$NPMGR_ACME_SERVER" --issue --dns dns_cf -d "$domain" \
+    --debug 2 --log "$ACME_LOG_FILE" >/dev/null 2>&1; then
+    if grep -Eq 'Domains not changed|Skipping\. Next renewal time|Add .--force. to force renewal|not due for renewal' "$ACME_LOG_FILE" 2>/dev/null; then
+      log "检测到 ${domain} 已有证书且未到续期时间，继续安装已有证书。"
+    else
+      return 1
+    fi
+  fi
   CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --server "$NPMGR_ACME_SERVER" --install-cert -d "$domain" \
     --fullchain-file "$CERTS_DIR/$domain/fullchain.pem" \
     --key-file "$CERTS_DIR/$domain/privkey.pem" \
-    --debug 2 --log "$ACME_LOG_FILE" >/dev/null || return 1
+    --debug 2 --log "$ACME_LOG_FILE" >/dev/null 2>&1 || return 1
 }
 
 render_rule_from_file() {
