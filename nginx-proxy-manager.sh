@@ -825,6 +825,40 @@ show_rule() {
   cat "$path"
 }
 
+diagnose_rule() {
+  local rule_name="$1"
+  load_rule "$rule_name"
+  local rule_file="$RULES_DIR/$rule_name.conf"
+  local nginx_config=''
+  if [[ "${RULE_TYPE:-}" == "http" ]]; then
+    nginx_config="$SITES_AVAILABLE_DIR/npmgr-$rule_name.conf"
+  elif [[ "${RULE_TYPE:-}" == "tcp" ]]; then
+    nginx_config="$STREAMS_AVAILABLE_DIR/npmgr-$rule_name.conf"
+  fi
+
+  printf '===== 规则文件 =====\n'
+  cat "$rule_file"
+  printf '\n===== Nginx 配置 =====\n'
+  if [[ -n "$nginx_config" && -f "$nginx_config" ]]; then
+    cat "$nginx_config"
+  else
+    printf '未找到已生成的 Nginx 配置: %s\n' "${nginx_config:-未知}"
+  fi
+
+  if [[ -n "${SERVER_NAME:-}" ]]; then
+    printf '\n===== 域名配置引用 =====\n'
+    grep -R -- "$SERVER_NAME" "$NPMGR_NGINX_ETC" -n 2>/dev/null || printf '未在 %s 中找到域名引用。\n' "$NPMGR_NGINX_ETC"
+  fi
+
+  if [[ -n "${SERVER_NAME:-}" && -f "$CERTS_DIR/$SERVER_NAME/fullchain.pem" ]]; then
+    printf '\n===== 证书信息 =====\n'
+    openssl x509 -in "$CERTS_DIR/$SERVER_NAME/fullchain.pem" -noout -subject -issuer -dates || true
+  elif [[ -n "${SERVER_NAME:-}" ]]; then
+    printf '\n===== 证书信息 =====\n'
+    printf '未找到证书文件: %s\n' "$CERTS_DIR/$SERVER_NAME/fullchain.pem"
+  fi
+}
+
 delete_rule() {
   local rule_name="$1"
   load_rule "$rule_name"
@@ -956,6 +990,7 @@ usage() {
   $SCRIPT_NAME add-tcp [参数]
   $SCRIPT_NAME list
   $SCRIPT_NAME show <rule_name>
+  $SCRIPT_NAME diagnose <rule_name>
   $SCRIPT_NAME edit <rule_name> [参数]
   $SCRIPT_NAME delete <rule_name>
   $SCRIPT_NAME enable <rule_name>
@@ -993,6 +1028,7 @@ command_label() {
     add-tcp) printf '添加 TCP 转发规则' ;;
     list) printf '查看规则列表' ;;
     show) printf '查看单条规则详情' ;;
+    diagnose) printf '诊断规则配置' ;;
     edit) printf '修改已有规则' ;;
     delete) printf '删除规则' ;;
     enable) printf '启用规则' ;;
@@ -1081,13 +1117,14 @@ interactive_menu() {
 4) 添加 TCP 转发规则
 5) 查看规则列表
 6) 查看单条规则详情
-7) 修改已有规则
-8) 删除规则
-9) 启用规则
-10) 禁用规则
-11) 重新加载 Nginx
-12) 执行证书续期
-13) 检查 Cloudflare 凭据
+7) 诊断规则配置
+8) 修改已有规则
+9) 删除规则
+10) 启用规则
+11) 禁用规则
+12) 重新加载 Nginx
+13) 执行证书续期
+14) 检查 Cloudflare 凭据
 0) 退出
 EOF
     local choice
@@ -1099,18 +1136,19 @@ EOF
       4) interactive_add_tcp ;;
       5) list_rules ;;
       6) show_rule "$(prompt '规则名')" ;;
-      7)
+      7) diagnose_rule "$(prompt '规则名')" ;;
+      8)
         local rule_name
         rule_name="$(prompt '规则名')"
         warn "修改规则的交互式逐字段向导暂未完成，请先使用命令行方式。"
         show_rule "$rule_name"
         ;;
-      8) delete_rule "$(prompt '规则名')" ;;
-      9) set_rule_enabled_state "$(prompt '规则名')" "on" ;;
-      10) set_rule_enabled_state "$(prompt '规则名')" "off" ;;
-      11) reload_nginx ;;
-      12) renew_certs ;;
-      13) cf_dns_check ;;
+      9) delete_rule "$(prompt '规则名')" ;;
+      10) set_rule_enabled_state "$(prompt '规则名')" "on" ;;
+      11) set_rule_enabled_state "$(prompt '规则名')" "off" ;;
+      12) reload_nginx ;;
+      13) renew_certs ;;
+      14) cf_dns_check ;;
       0) break ;;
       *) warn "无效选择。" ;;
     esac
@@ -1180,6 +1218,11 @@ main() {
       [[ $# -ge 1 ]] || die "$(command_label show) 需要规则名。"
       ensure_layout
       show_rule "$1"
+      ;;
+    diagnose)
+      [[ $# -ge 1 ]] || die "$(command_label diagnose) 需要规则名。"
+      ensure_layout
+      diagnose_rule "$1"
       ;;
     edit)
       [[ $# -ge 1 ]] || die "$(command_label edit) 需要规则名。"

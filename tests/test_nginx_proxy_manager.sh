@@ -131,6 +131,27 @@ if [[ "${1:-}" == "-V" ]]; then
 fi
 echo "fake nginx $*"
 EOF
+  cat >"$TMP_ROOT/bin/openssl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"x509"* ]]; then
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -in)
+        shift
+        cert_file="${1:-}"
+        ;;
+    esac
+    shift || true
+  done
+  echo "subject=CN=${cert_file:-unknown}"
+  echo "issuer=CN=Mock Issuer"
+  echo "notBefore=Jan  1 00:00:00 2026 GMT"
+  echo "notAfter=Apr  1 00:00:00 2026 GMT"
+  exit 0
+fi
+echo "mock openssl $*"
+EOF
   cat >"$TMP_ROOT/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -283,7 +304,7 @@ if [[ "$original_args" == *"--install-cert"* ]]; then
 fi
 EOF
   fi
-  chmod +x "$TMP_ROOT/bin/nginx" "$TMP_ROOT/bin/systemctl" "$TMP_ROOT/bin/apt-get" "$TMP_ROOT/bin/curl" "$TMP_ROOT/bin/jq"
+  chmod +x "$TMP_ROOT/bin/nginx" "$TMP_ROOT/bin/openssl" "$TMP_ROOT/bin/systemctl" "$TMP_ROOT/bin/apt-get" "$TMP_ROOT/bin/curl" "$TMP_ROOT/bin/jq"
   if [[ "$with_acme" == "1" ]]; then
     chmod +x "$TMP_ROOT/bin/acme.sh"
   fi
@@ -630,6 +651,28 @@ test_list_and_show_display_rule_details() {
   teardown_env
 }
 
+test_diagnose_displays_rule_config_and_certificate() {
+  setup_env
+  run_cmd install >/dev/null
+  export NPMGR_ACME_ISSUE_SKIP=1
+  run_cmd add-http \
+    --name diag \
+    --domain diag.example.com \
+    --listen 443 \
+    --upstream-host 127.0.0.1 \
+    --upstream-port 3000 \
+    --https on >/dev/null
+  local diagnose_output
+  diagnose_output="$(run_cmd diagnose diag)"
+  assert_contains "$diagnose_output" "规则文件"
+  assert_contains "$diagnose_output" "Nginx 配置"
+  assert_contains "$diagnose_output" "证书信息"
+  assert_contains "$diagnose_output" "diag.example.com"
+  assert_contains "$diagnose_output" "Mock Issuer"
+  unset NPMGR_ACME_ISSUE_SKIP
+  teardown_env
+}
+
 test_edit_and_enable_disable_work() {
   setup_env
   run_cmd install >/dev/null
@@ -756,6 +799,7 @@ main() {
   test_invalid_port_is_rejected
   test_delete_removes_rule_and_configs
   test_list_and_show_display_rule_details
+  test_diagnose_displays_rule_config_and_certificate
   test_edit_and_enable_disable_work
   test_reload_renew_and_cf_check_work
   test_reload_removes_legacy_stream_include
