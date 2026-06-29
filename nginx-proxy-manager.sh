@@ -590,6 +590,7 @@ EOF
 issue_certificate() {
   local domain="$1"
   local acme_cmd
+  local reload_cmd='nginx -t && systemctl reload nginx'
   acme_cmd="$(get_acme_cmd)"
   load_cloudflare_credentials
   [[ -n "${CF_Token:-}" ]] || die "申请证书前请设置 CF_Token。"
@@ -606,6 +607,7 @@ issue_certificate() {
   CF_Token="$CF_Token" "$acme_cmd" --home "$NPMGR_ACME_HOME" --server "$NPMGR_ACME_SERVER" --install-cert -d "$domain" \
     --fullchain-file "$CERTS_DIR/$domain/fullchain.pem" \
     --key-file "$CERTS_DIR/$domain/privkey.pem" \
+    --reloadcmd "$reload_cmd" \
     --debug 2 --log "$ACME_LOG_FILE" >/dev/null 2>&1 || return 1
 }
 
